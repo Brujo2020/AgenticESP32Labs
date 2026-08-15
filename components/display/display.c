@@ -12,6 +12,8 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
@@ -22,11 +24,25 @@
 #define W  BOARD_LCD_H_RES
 #define H  BOARD_LCD_V_RES
 #define STRIP 40
+// Dos buffers de franja: mientras uno viaja por DMA se prepara el otro.
+// Con uno solo hay carrera, ver display_flush.
+#define N_STRIPS 2
 
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel = NULL;
 static uint16_t *s_fb = NULL;
-static uint16_t *s_strip = NULL;
+static uint16_t *s_strip[N_STRIPS] = {0};
+static SemaphoreHandle_t s_libre = NULL;   // franjas DMA disponibles
+
+// El driver avisa cuando termina de enviar una franja. Sin esto no hay forma
+// de saber cuando es seguro reutilizar su buffer.
+static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *e, void *ctx)
+{
+    BaseType_t hp = pdFALSE;
+    xSemaphoreGiveFromISR(s_libre, &hp);
+    return hp == pdTRUE;
+}
 
 esp_err_t display_init(void)
 {
@@ -52,8 +68,12 @@ esp_err_t display_init(void)
     display_set_brightness(85);
 
     s_fb    = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
-    s_strip = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
-    ESP_RETURN_ON_FALSE(s_fb && s_strip, ESP_ERR_NO_MEM, TAG, "sin memoria");
+    for (int i = 0; i < N_STRIPS; i++) {
+        s_strip[i] = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
+        ESP_RETURN_ON_FALSE(s_strip[i], ESP_ERR_NO_MEM, TAG, "sin memoria DMA");
+    }
+    s_libre = xSemaphoreCreateCounting(N_STRIPS, N_STRIPS);
+    ESP_RETURN_ON_FALSE(s_fb && s_libre, ESP_ERR_NO_MEM, TAG, "sin memoria");
 
     spi_bus_config_t bus = {
         .sclk_io_num = BOARD_LCD_SCLK,
@@ -74,6 +94,7 @@ esp_err_t display_init(void)
         .lcd_param_bits = 8,
         .spi_mode = 0,
         .trans_queue_depth = 10,
+        .on_color_trans_done = on_trans_done,
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_cfg, &io), TAG, "panel io");
 
@@ -163,18 +184,35 @@ void display_text_center(int cx, int y, const char *s, uint16_t c, int e)
     display_text(cx - (int)strlen(s) * 3 * e, y, s, c, e);
 }
 
+// esp_lcd_panel_draw_bitmap es ASINCRONA: encola la transferencia y vuelve.
+// Con un solo buffer, la franja siguiente lo sobrescribia mientras la anterior
+// todavia se estaba enviando, y el panel recibia dos veces el mismo contenido
+// con 40 px de desfase, que es exactamente el tamano de una franja. En pantalla
+// eso se veia como el boton VOZ duplicado mas abajo.
+//
+// La solucion es la que indica la propia documentacion de ESP-IDF: registrar
+// on_color_trans_done y no reutilizar un buffer hasta que su envio termine.
 void display_flush(void)
 {
+    int b = 0;
     for (int y = 0; y < H; y += STRIP) {
         int lines = (y + STRIP > H) ? (H - y) : STRIP;
-        // El framebuffer guarda RGB565 en el orden nativo del ESP32 (little
-        // endian) y el GC9A01 espera el byte alto primero. Con memcpy cada
-        // color llegaba con los bytes al reves: el cian se veia amarillo, el
-        // lima rojo y el gris magenta. bswap16 es una sola instruccion.
+
+        // Espera a que este buffer quede libre. Con plazo, no indefinida: si el
+        // callback no llegara, es preferible una imagen imperfecta a una
+        // pantalla congelada para siempre.
+        if (xSemaphoreTake(s_libre, pdMS_TO_TICKS(100)) != pdTRUE)
+            ESP_LOGW(TAG, "franja sin confirmar, se sigue igualmente");
+
+        // RGB565 nativo del ESP32 (little endian) al orden que espera el
+        // GC9A01, byte alto primero.
         const uint16_t *src = &s_fb[y * W];
+        uint16_t *dst = s_strip[b];
         int n = lines * W;
-        for (int i = 0; i < n; i++) s_strip[i] = __builtin_bswap16(src[i]);
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip);
+        for (int i = 0; i < n; i++) dst[i] = __builtin_bswap16(src[i]);
+
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, dst);
+        b = (b + 1) % N_STRIPS;
     }
 }
 

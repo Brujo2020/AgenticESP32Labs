@@ -108,7 +108,10 @@ void vistas_toca(int indice, int fila)
 {
     vista_t *v = vistas_get(indice);
     if (!v || !s_emisor) return;
-    char buf[64];
+    // 96 y no 64: la plantilla son 47 caracteres, mas 15 de id y los digitos
+    // de fila. A 64 el margen era de un byte y dependia de que fila fuese
+    // siempre de un digito. Un truncado aqui produce JSON invalido.
+    char buf[96];
     snprintf(buf, sizeof(buf),
              "{\"t\":\"evento\",\"id\":\"%s\",\"accion\":\"toque\",\"fila\":%d}",
              v->id, fila);

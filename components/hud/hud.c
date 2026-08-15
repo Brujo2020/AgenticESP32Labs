@@ -141,9 +141,12 @@ void hud_boot_anim(void)
         // La marca aparece letra a letra
         if (f > 14) {
             int n = (f - 14) / 2;
-            if (n > (int)strlen(marca)) n = strlen(marca);
-            char buf[16] = {0};
-            strncpy(buf, marca, n);
+            if (n > (int)strlen(marca)) n = (int)strlen(marca);
+            // snprintf en vez de strncpy: con n == strlen(marca) strncpy copia
+            // los 11 bytes sin NUL y GCC 14 no puede probar que el buffer ya
+            // estaba a cero, asi que -Werror=stringop-truncation tumba el build.
+            char buf[16];
+            snprintf(buf, (size_t)n + 1, "%s", marca);
             display_text_center(CX, 112, buf, C_WHITE, 2);
         }
         if (f > 32) display_text_center(CX, 140, "SISTEMA EN LINEA",

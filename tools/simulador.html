@@ -84,19 +84,19 @@
     <label><input type="checkbox" id="ovSafe"> Área visible del círculo <span class="tag">r=118</span></label>
     <label><input type="checkbox" id="ovTouch"> Zonas táctiles reales</label>
     <label><input type="checkbox" id="ovRows"> Filas de AJUSTES vs bandas</label>
-    <label><input type="checkbox" id="fix"> <b>Aplicar correcciones</b> <span class="tag good">7 bugs</span></label>
+    <label><input type="checkbox" id="fix"> <b>Reproducir los bugs antiguos</b> <span class="tag bad">antes de v0.7</span></label>
   </div>
 
   <div class="panel">
     <h2>Bugs detectados</h2>
     <ul class="bugs" id="buglist">
-      <li data-b="1"><b>AJUSTES desalineado.</b> Bandas y&lt;112/145/168/192 vs filas 62/90/122/142/160. De TEMA abajo selecciona la fila anterior; REJILLA inalcanzable.</li>
-      <li data-b="2"><b>Sin clipping circular.</b> lista() y p_chat() pintan desde x=38 sin truncar: 33 chars llegan a x=236, fuera del círculo.</li>
-      <li data-b="3"><b>hud_ajuste_siguiente() muerta.</b> Exportada, nunca invocada.</li>
-      <li data-b="4"><b>Cursor &gt; desfasado.</b> marcas[]={66,94,…} vs etiquetas en 62,90.</li>
-      <li data-b="5"><b>Sin cancelar toque.</b> hud_touch_up ignora (x,y): arrastrar fuera igual activa.</li>
-      <li data-b="6"><b>Atajo sin transición.</b> s_scr=SCR_VOZ no pone s_trans.</li>
-      <li data-b="7"><b>Botón VOZ roza los puntos.</b> Botón acaba en y=222, indicadores en y=224.</li>
+      <li class="fixed" data-b="1"><b>AJUSTES desalineado.</b> Bandas y&lt;112/145/168/192 vs filas 62/90/122/142/160. De TEMA abajo selecciona la fila anterior; REJILLA inalcanzable.</li>
+      <li class="fixed" data-b="2"><b>Sin clipping circular.</b> lista() y p_chat() pintan desde x=38 sin truncar: 33 chars llegan a x=236, fuera del círculo.</li>
+      <li class="fixed" data-b="3"><b>hud_ajuste_siguiente() muerta.</b> Exportada, nunca invocada.</li>
+      <li class="fixed" data-b="4"><b>Cursor &gt; desfasado.</b> marcas[]={66,94,…} vs etiquetas en 62,90.</li>
+      <li class="fixed" data-b="5"><b>Sin cancelar toque.</b> hud_touch_up ignora (x,y): arrastrar fuera igual activa.</li>
+      <li class="fixed" data-b="6"><b>Atajo sin transición.</b> s_scr=SCR_VOZ no pone s_trans.</li>
+      <li class="fixed" data-b="7"><b>Botón VOZ roza los puntos.</b> Botón acaba en y=222, indicadores en y=224.</li>
     </ul>
   </div>
 </div>
@@ -292,20 +292,24 @@ function boton(b,activo){
   if(b.redondo){
     const cx=b.x+b.w/2|0,cy=b.y+b.h/2|0,r=b.w/2|0;
     fillCircle(cx,cy,r,relleno); arc(cx,cy,r,2,0,359,borde);
-    if(b.txt)textC(cx,cy-(FIX?3.5*e|0:3*e),b.txt,C_WHITE,e);
+    if(b.txt)textC(cx,cy-(3.5*e|0),b.txt,C_WHITE,e);
   }else{
     rect(b.x,b.y,b.w,b.h,relleno);
     rect(b.x,b.y,b.w,2,borde); rect(b.x,b.y+b.h-2,b.w,2,borde);
     rect(b.x,b.y,2,b.h,borde); rect(b.x+b.w-2,b.y,2,b.h,borde);
-    if(b.txt)textC(b.x+b.w/2|0,b.y+b.h/2-(FIX?3.5*e|0:3*e),b.txt,C_WHITE,e);
+    if(b.txt)textC(b.x+b.w/2|0,b.y+b.h/2-(3.5*e|0),b.txt,C_WHITE,e);
   }
 }
 
 // ════════════════════════════════════════════════════════════
 //  Puerto de components/hud/hud.c
 // ════════════════════════════════════════════════════════════
-const B_PREV={x:8,y:96,w:26,h:48,txt:"<",color:C_GREY,escala_txt:1};
-const B_NEXT={x:206,y:96,w:26,h:48,txt:">",color:C_GREY,escala_txt:1};
+const B_PREV={x:6,y:96,w:22,h:48,txt:"<",color:C_GREY,escala_txt:1};
+const B_NEXT={x:212,y:96,w:22,h:48,txt:">",color:C_GREY,escala_txt:1};
+
+// Los mismos margenes que hud.c. Si cambian alli, cambian aqui: el valor de
+// este simulador depende por completo de que la geometria coincida.
+const MARGEN_IZQ=40, MARGEN_DER=202, TXT_IZQ=MARGEN_IZQ+10;
 const BTN_PREV=100,BTN_NEXT=101,BTN_ACC=102;
 
 function botonAccion(){
@@ -313,7 +317,7 @@ function botonAccion(){
   if(s_scr===SCR.AJUSTES)
     return {x:96,y:182,w:48,h:26,txt:"MAS",color:ac,escala_txt:1};
   // FIX 7: sube el boton 4px para no rozar los puntos de y=224
-  const y=FIX?176:182;
+  const y=FIX?182:176;
   return {x:100,y:y,w:40,h:40,redondo:true,
           txt:s_hablando?"..":"VOZ",color:s_hablando?C_LIME:ac,escala_txt:1};
 }
@@ -343,9 +347,10 @@ function marco(){
 
 // --- ancho maximo de texto dentro del circulo a una altura y ---
 function anchoSeguro(y,x0){
-  const dy=y+3-CY;                    // centro vertical del glifo
+  const dy=y+3-CY;
   const semi=Math.sqrt(Math.max(0,118*118-dy*dy));
-  return Math.max(0,((CX+semi)-x0)/6|0);
+  const limite=Math.min(CX+semi,MARGEN_DER);   // circulo Y margen derecho
+  return Math.max(0,(limite-x0)/6|0);
 }
 
 function pNucleo(){
@@ -391,17 +396,15 @@ function lista(arr,col,vacio){
   if(!arr.length){ textC(CX,112,vacio,C_GREY,1); return; }
   let y=62;
   for(let i=0;i<arr.length&&i<6;i++,y+=20){
-    fillCircle(28,y+3,2,col);
-    const s=FIX?cut(arr[i],anchoSeguro(y,38)):arr[i];
-    text(38,y,s,C_WHITE,1);
+    fillCircle(MARGEN_IZQ,y+3,2,col);
+    text(TXT_IZQ,y,cut(arr[i],anchoSeguro(y,TXT_IZQ)),C_WHITE,1);
   }
 }
 function pChat(){
   let y=62;
   for(const [t,mio] of CHAT){
-    text(26,y,mio?">":"<",mio?C_CYAN:C_LIME,1);
-    const s=FIX?cut(t,anchoSeguro(y,38)):cut(t,SIM.len);
-    text(38,y,s,mio?C_WHITE:C_LIME,1);
+    text(MARGEN_IZQ-4,y,mio?">":"<",mio?C_CYAN:C_LIME,1);
+    text(TXT_IZQ,y,cut(t,anchoSeguro(y,TXT_IZQ)),mio?C_WHITE:C_LIME,1);
     y+=20;
   }
 }
@@ -430,17 +433,18 @@ function pAjustes(){
   conmutador(142,"LINEAS",A.scanlines,s_sel===3);
   conmutador(160,"REJILLA",A.rejilla,s_sel===4);
   // FIX 4: alinear el cursor con las etiquetas reales
-  const marcas=FIX?[62,90,122,142,160]:[66,94,122,142,160];
+  const marcas=FIX?[66,94,122,142,160]:[62,90,122,142,160];
   text(bx-12,marcas[s_sel],">",C_WHITE,1);
 }
 function pSistema(){
   const ac=acento(); let y=66;
-  text(52,y,"IP",C_GREY,1); text(86,y,SIM.net?"192.168.1.42":"0.0.0.0",ac,1); y+=20;
-  text(52,y,"RF",C_GREY,1); text(86,y,SIM.net?"-52 DBM":"NO",SIM.net?C_LIME:C_BLOOD,1); y+=20;
-  text(52,y,"RAM",C_GREY,1); text(86,y,"118 KB",C_AMBER,1); y+=20;
+  const MI=MARGEN_IZQ, MV=MARGEN_IZQ+34;
+  text(MI,y,"IP",C_GREY,1); text(MV,y,SIM.net?"192.168.1.42":"0.0.0.0",ac,1); y+=20;
+  text(MI,y,"RF",C_GREY,1); text(MV,y,SIM.net?"-52 DBM":"NO",SIM.net?C_LIME:C_BLOOD,1); y+=20;
+  text(MI,y,"RAM",C_GREY,1); text(MV,y,"118 KB",C_AMBER,1); y+=20;
   const s=Math.floor(s_t/30), p=n=>String(n).padStart(2,"0");
-  text(52,y,"ON",C_GREY,1);
-  text(86,y,`${p(s/3600|0)}:${p((s/60|0)%60)}:${p(s%60)}`,C_MAGENTA,1); y+=24;
+  text(MI,y,"ON",C_GREY,1);
+  text(MV,y,`${p(s/3600|0)}:${p((s/60|0)%60)}:${p(s%60)}`,C_MAGENTA,1); y+=24;
   textC(CX,y,SIM.audio?"AUDIO OK":"AUDIO --",SIM.audio?C_LIME:C_BLOOD,1);
 }
 
@@ -471,7 +475,7 @@ function touchDown(x,y){
   }
 }
 function touchHold(x,y){
-  if(FIX&&s_pulsado>=0){                       // FIX 5: cancelar al salir
+  if(!FIX&&s_pulsado>=0){                      // cancelar al salir del boton
     const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
     if(!dentro(b,x,y)&&!s_hablando){ s_pulsado=-1; return; }
   }
@@ -487,7 +491,7 @@ function touchUp(x,y){
     s_pulsado=-1; return;
   }
   if(s_hablando){ s_hablando=false; s_state=ST.IDLE; s_pulsado=-1; return; }
-  if(FIX&&s_pulsado>=0){
+  if(!FIX&&s_pulsado>=0){
     const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
     if(!dentro(b,x,y)){ s_pulsado=-1; return; }
   }
@@ -497,10 +501,10 @@ function touchUp(x,y){
   else if(s_pulsado===BTN_ACC){
     if(s_scr===SCR.AJUSTES){
       // FIX 3: el boton avanza la seleccion; toque largo incrementa
-      if(FIX&&performance.now()-s_t_down<400){ s_sel=(s_sel+1)%5; }
+      if(!FIX&&performance.now()-s_t_down<400){ s_sel=(s_sel+1)%5; }
       else incrementa();
     }
-    else { s_scr=SCR.VOZ; if(FIX)s_trans=8; }   // FIX 6
+    else { s_scr=SCR.VOZ; if(!FIX)s_trans=8; }
   }
   s_pulsado=-1;
 }
@@ -702,7 +706,7 @@ $("sMic").oninput=e=>{SIM.mic=+e.target.value;$("vMic").textContent=SIM.mic;};
 $("sLen").oninput=e=>{SIM.len=+e.target.value;$("vLen").textContent=SIM.len;};
 $("fix").onchange=e=>{
   FIX=e.target.checked;
-  document.querySelectorAll("#buglist li").forEach(li=>li.classList.toggle("fixed",FIX));
+  document.querySelectorAll("#buglist li").forEach(li=>li.classList.toggle("fixed",!FIX));
 };
 
 // ---- Bucle a 30 fps, como main.c ----

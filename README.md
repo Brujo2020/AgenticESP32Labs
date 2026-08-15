@@ -99,5 +99,8 @@ Tres cosas que costaron encontrar y conviene saber:
   Por eso el componente oficial `espressif/es8311` no sirve y el códec está
   reimplementado a mano, con la secuencia de registros del driver de Espressif.
 - **El backlight tiene lógica invertida** (0 enciende) y va por PWM para regular brillo.
-- **El panel se dibuja espejado en X**, así que el táctil se configura igual
-  o los toques salen invertidos.
+- **`esp_lcd_panel_mirror(true, false)` no espeja la imagen: la corrige.** Este
+  módulo viene cableado al revés y esa llamada lo endereza. El resultado visible
+  es framebuffer x=0 → izquierda física, sin espejo. Por eso el táctil va con
+  `mirror_x = 0`: con 1, tocar a la derecha activaba el botón de la izquierda.
+  Se comprueba mirando el texto en pantalla, que se lee del derecho.

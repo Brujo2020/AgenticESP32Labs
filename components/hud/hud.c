@@ -30,6 +30,12 @@ static int s_sel = 0;               // control seleccionado en AJUSTES
 static int  s_pulsado = -1;         // boton bajo el dedo ahora mismo
 static bool s_hablando = false;
 static int64_t s_t_down = 0;
+// Ultima posicion valida del dedo. Hace falta porque al soltar, touch_get()
+// devuelve false sin escribir las coordenadas, y main.c reenvia los ceros con
+// que las inicializa. Es decir: hud_touch_up() SIEMPRE recibe (0,0) y esas
+// coordenadas no significan nada. Para saber si se solto dentro o fuera del
+// boton hay que mirar donde estaba el dedo la ultima vez que se supo.
+static int s_ux = -1, s_uy = -1;
 
 // ---- Botones fijos de navegacion (48 px: tamano de pulgar) ----
 #define BTN_PREV 100
@@ -396,6 +402,7 @@ static void p_sistema(void)
 void hud_touch_down(int x, int y)
 {
     s_t_down = esp_timer_get_time() / 1000;
+    s_ux = x; s_uy = y;
     boton_t acc = boton_accion();
     uint16_t ac = ajustes_acento();
 
@@ -404,6 +411,11 @@ void hud_touch_down(int x, int y)
     else if (ui_dentro(&acc, x, y))    { s_pulsado = BTN_ACC;  ui_ripple_lanza(x, y, ac); }
     else {
         s_pulsado = -1;
+        // La onda se lanza en cualquier toque, no solo sobre un boton. Sirve
+        // de retroalimentacion siempre, y hace visible DONDE cree el sistema
+        // que has tocado: si aparece en el lado contrario al dedo, los ejes
+        // del tactil estan mal, que es justo lo que pasaba.
+        ui_ripple_lanza(x, y, display_escala(ac, 120));
         // Toque directo sobre una fila de AJUSTES: la selecciona
         if (s_scr == SCR_AJUSTES) {
             // Puntos medios entre las filas reales (62/90/122/142/160).
@@ -422,7 +434,7 @@ void hud_touch_down(int x, int y)
 
 void hud_touch_hold(int x, int y)
 {
-    (void)x; (void)y;
+    s_ux = x; s_uy = y;
     // Mantener el boton de voz activa el microfono
     if (s_pulsado == BTN_ACC && s_scr != SCR_AJUSTES && !s_hablando) {
         int64_t t = esp_timer_get_time() / 1000;
@@ -435,6 +447,8 @@ void hud_touch_hold(int x, int y)
 
 void hud_touch_up(int x, int y)
 {
+    // Las coordenadas al soltar no son fiables, ver s_ux/s_uy
+    (void)x; (void)y;
     if (s_hablando) {
         voice_talk_stop();
         s_hablando = false;
@@ -442,12 +456,13 @@ void hud_touch_up(int x, int y)
         return;
     }
     // Soltar fuera del boton cancela: el gesto estandar es poder arrastrar el
-    // dedo afuera para arrepentirse. Antes se ejecutaba igual.
-    if (s_pulsado >= 0) {
+    // dedo afuera para arrepentirse. Se comprueba contra la ULTIMA posicion
+    // conocida, no contra los argumentos: al soltar llegan siempre (0,0).
+    if (s_pulsado >= 0 && s_ux >= 0) {
         boton_t acc = boton_accion();
         const boton_t *b = (s_pulsado == BTN_PREV) ? &B_PREV
                          : (s_pulsado == BTN_NEXT) ? &B_NEXT : &acc;
-        if (!ui_dentro(b, x, y)) { s_pulsado = -1; return; }
+        if (!ui_dentro(b, s_ux, s_uy)) { s_pulsado = -1; return; }
     }
     switch (s_pulsado) {
         case BTN_PREV: hud_prev_screen(); break;

@@ -1,0 +1,175 @@
+# ============================================================
+#  Asistente de voz — configuracion
+#
+#  Cambiar de hyperscaler = reordenar las listas de 'proveedores'.
+#  Ni el firmware ni el agente se tocan.
+#
+#  El orden es prioridad: se usa el primero disponible y, si falla
+#  en caliente, la cadena pasa automaticamente al siguiente.
+# ============================================================
+
+proveedores:
+  # Groq primero: gratis, el mas rapido del mercado y con tool calling
+  # real, que es lo que hace que los MCP sirvan de algo.
+  llm: [groq, nvidia, mlx]
+  stt: [groq, mlx-whisper]
+  tts: [macos]
+
+# ------------------------------------------------------------
+#  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
+#  solo las listas de arriba deciden. Los que no tengan credenciales
+#  se descartan solos al arrancar.
+# ------------------------------------------------------------
+catalogo:
+
+  llm:
+    groq:                     # GRATIS · https://console.groq.com
+      backend: "openai-compatible"
+      base_url: "https://api.groq.com/openai/v1"
+      model: "llama-3.3-70b-versatile"
+      api_key: "${GROQ_API_KEY}"
+      description: "Groq — gratis, inferencia mas rapida, tool calling"
+
+    nvidia:                   # GRATIS · https://build.nvidia.com
+      backend: "openai-compatible"
+      base_url: "https://integrate.api.nvidia.com/v1"
+      model: "meta/llama-3.3-70b-instruct"
+      api_key: "${NVIDIA_API_KEY}"
+      description: "NVIDIA NIM — gratis, ~40 req/min, 100+ modelos"
+
+    mlx:                      # LOCAL · sin red, sin coste, privado
+      backend: "openai-compatible"
+      base_url: "http://localhost:8000/v1"
+      model: "qwen3-4b-4bit"
+      api_key: "no-necesaria"
+      description: "oMLX local — demo edge y privada"
+
+    cloudflare:               # https://dash.cloudflare.com (Workers AI)
+      backend: "openai-compatible"
+      base_url: "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/v1"
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+      api_key: "${CF_API_TOKEN}"
+      description: "Cloudflare Workers AI — edge global"
+
+    azure:                    # Azure OpenAI
+      backend: "openai-compatible"
+      base_url: "https://${AZURE_OPENAI_RESOURCE}.openai.azure.com/openai/v1"
+      model: "gpt-4o-mini"
+      api_key: "${AZURE_OPENAI_KEY}"
+      description: "Azure OpenAI — hyperscaler, cumplimiento empresarial"
+
+    gcp:                      # Vertex AI, endpoint compatible OpenAI
+      backend: "openai-compatible"
+      base_url: "https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT}/locations/${GCP_REGION}/endpoints/openapi"
+      model: "google/gemini-2.0-flash"
+      api_key: "${GCP_ACCESS_TOKEN}"
+      description: "Google Vertex AI"
+
+    aws:                      # Bedrock via pasarela compatible OpenAI
+      backend: "openai-compatible"
+      base_url: "${AWS_BEDROCK_GATEWAY}"
+      model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+      api_key: "${AWS_BEARER_TOKEN_BEDROCK}"
+      description: "AWS Bedrock"
+
+    claude:
+      backend: "anthropic"
+      model: "claude-sonnet-4-5"
+      api_key: "${ANTHROPIC_API_KEY}"
+      description: "Anthropic directo — mejor razonamiento"
+
+  stt:
+    groq:
+      backend: "groq"
+      model: "whisper-large-v3-turbo"
+      api_key: "${GROQ_API_KEY}"
+      description: "Whisper v3 turbo en Groq — gratis y muy rapido"
+
+    mlx-whisper:
+      backend: "mlx-whisper"
+      model: "mlx-community/whisper-small-mlx"
+      description: "Whisper local en Apple Silicon — privado, sin red"
+
+    openai:
+      backend: "openai-compatible"
+      base_url: "https://api.openai.com/v1"
+      model: "whisper-1"
+      api_key: "${OPENAI_API_KEY}"
+
+  tts:
+    macos:
+      backend: "macos"
+      voice: "Monica"
+      description: "Voz del sistema — sin dependencias ni coste"
+
+    piper:
+      backend: "piper"
+      model_path: ""          # ruta al .onnx de Piper
+      description: "Neuronal local, multiplataforma — demo edge"
+
+    openai:
+      backend: "openai-compatible"
+      base_url: "https://api.openai.com/v1"
+      model: "tts-1"
+      voice: "nova"
+      api_key: "${OPENAI_API_KEY}"
+
+# ------------------------------------------------------------
+#  MCP: cada herramienta es un proceso aparte. Anadir una capacidad
+#  es anadir una entrada aqui, sin tocar el agente ni el firmware.
+# ------------------------------------------------------------
+mcp_servers:
+  clima:
+    type: "subprocess"
+    command: ["python3", "mcps/clima.py"]
+    env: { PYTHONPATH: "." }
+
+  sistema:
+    type: "subprocess"
+    command: ["python3", "mcps/sistema.py"]
+    env: { PYTHONPATH: "." }
+
+  mac:
+    type: "subprocess"
+    command: ["python3", "mcps/mac.py"]
+    env: { PYTHONPATH: "." }
+
+  blender:
+    type: "subprocess"
+    command: ["uvx", "blender-mcp"]
+
+  unity:
+    type: "subprocess"
+    command: ["npx", "-y", "@coplaydev/unity-mcp"]
+
+  # --- MCP oficiales, se descargan al vuelo con npx ---
+  ficheros:
+    type: "subprocess"
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/mramospe/Documentos"]
+
+  memoria:
+    type: "subprocess"
+    command: ["npx", "-y", "@modelcontextprotocol/server-memory"]
+
+  busqueda:
+    type: "subprocess"
+    command: ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
+    env: { BRAVE_API_KEY: "${BRAVE_API_KEY}" }
+
+tools_to_enable:
+  - clima
+  - sistema
+  - mac
+  # - blender      # requiere el addon BlenderMCP instalado en Blender
+  # - unity        # requiere el paquete Unity MCP en el proyecto
+  # - ficheros
+  # - memoria
+  # - busqueda
+
+websocket:
+  host: "0.0.0.0"
+  port: 8765
+  sample_rate: 24000
+
+logging:
+  level: "INFO"

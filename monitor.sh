@@ -39,5 +39,10 @@ fi
 echo "Puerto: $PORT"
 echo "Pulsa el boton de RESET de la placa para ver el arranque."
 echo "Salir: Ctrl+]"
+echo
+echo "Si sale  boot:0x23 (DOWNLOAD(USB/UART0))  y 'waiting for download',"
+echo "la placa NO esta ejecutando el firmware: se quedo en modo descarga."
+echo "No es un fallo de codigo. Desconecta el cable del todo, espera 3s y"
+echo "vuelve a conectarlo SIN tocar BOOT. El arranque normal es  boot:0x2b."
 echo "------------------------------------------------------------"
 idf.py -p "$PORT" monitor

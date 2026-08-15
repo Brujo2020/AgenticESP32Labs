@@ -1,0 +1,8 @@
+# <tipo>(<scope>): <resumen imperativo, minuscula, sin punto>
+#
+# <por que se hace este cambio. El diff ya explica que cambio.>
+#
+# tipos:  feat fix refactor perf style docs test build ci chore
+# scopes: firmware hud ui net voice audio display touch ajustes servidor board
+#
+# Un commit = un cambio coherente. Si el resumen lleva "y", son dos commits.

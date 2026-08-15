@@ -160,6 +160,8 @@ tools_to_enable:
   - clima
   - sistema
   - mac
+  - dispositivo
+  - vigia
   # - blender      # requiere el addon BlenderMCP instalado en Blender
   # - unity        # requiere el paquete Unity MCP en el proyecto
   # - ficheros

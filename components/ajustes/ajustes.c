@@ -7,7 +7,7 @@
 
 static const char *TAG = "ajustes";
 static ajustes_t s = { .brillo = 85, .volumen = 55, .tema = 0,
-                       .scanlines = true, .rejilla = true };
+                       .scanlines = false, .rejilla = false };
 
 ajustes_t *ajustes(void) { return &s; }
 

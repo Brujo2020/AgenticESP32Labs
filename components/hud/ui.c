@@ -15,21 +15,21 @@ void ui_ripple_lanza(int x, int y, uint16_t c)
 void ui_ripple_dibuja(void)
 {
     if (s_rt < 0) return;
-    int r = 6 + s_rt * 7;
-    uint8_t alpha = (uint8_t)(200 - s_rt * 18);
+    int r = 4 + s_rt * 5;
+    uint8_t alpha = (uint8_t)(140 - s_rt * 20);
     for (int a = 0; a < 360; a += 4) {
         float rad = a * (float)M_PI / 180.0f;
         display_px_glow(s_rx + (int)(r * cosf(rad)),
                         s_ry + (int)(r * sinf(rad)), s_rc, alpha);
     }
-    if (++s_rt > 10) s_rt = -1;
+    if (++s_rt > 6) s_rt = -1;
 }
 
 // ---------- Botones ----------
 bool ui_dentro(const boton_t *b, int x, int y)
 {
     // Margen extra: el dedo tapa el boton y se suele tocar algo por debajo
-    const int m = 6;
+    const int m = 14;   // el dibujo es pequeno; el area de toque, generosa
     if (b->redondo) {
         int cx = b->x + b->w / 2, cy = b->y + b->h / 2;
         int dx = x - cx, dy = y - cy, r = b->w / 2 + m;
@@ -49,7 +49,7 @@ void ui_boton(const boton_t *b, bool activo)
         int cx = b->x + b->w / 2, cy = b->y + b->h / 2, r = b->w / 2;
         display_fill_circle(cx, cy, r, relleno);
         display_arc(cx, cy, r, 2, 0, 359, borde);
-        if (activo) display_arc(cx, cy, r + 3, 1, 0, 359, display_escala(b->color, 120));
+
         if (b->txt) display_text_center(cx, cy - 3 * e, b->txt,
                                         activo ? C_WHITE : C_WHITE, e);
     } else {
@@ -59,11 +59,6 @@ void ui_boton(const boton_t *b, bool activo)
         display_rect(b->x, b->y + b->h - 2, b->w, 2, borde);
         display_rect(b->x, b->y, 2, b->h, borde);
         display_rect(b->x + b->w - 2, b->y, 2, b->h, borde);
-        // Esquinas marcadas, estetica de HUD
-        for (int k = 0; k < 8; k++) {
-            display_px(b->x + k, b->y, C_WHITE);
-            display_px(b->x + b->w - 1 - k, b->y + b->h - 1, C_WHITE);
-        }
         if (b->txt)
             display_text_center(b->x + b->w / 2, b->y + b->h / 2 - 3 * e, b->txt, C_WHITE, e);
     }

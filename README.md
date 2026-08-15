@@ -46,7 +46,22 @@ servidor/    el agente, en el Mac
 
 ## Puesta en marcha
 
-**Firmware** — ESP-IDF v6.0, target esp32s3:
+**Firmware** — ESP-IDF v6.0, target esp32s3.
+
+Primero la configuración local (una sola vez). Nada de esto se versiona:
+vive en `sdkconfig`, que git ignora.
+
+```bash
+idf.py menuconfig     # AgenticESP32Labs - Configuracion del HUD
+```
+
+| Menú | Qué se define |
+|------|---------------|
+| Red WiFi | SSID, password, reintentos |
+| Servidor agentico | host y puerto de fallback, hostname y timeout mDNS |
+| Localización | zona horaria POSIX, latitud y longitud para el clima |
+
+Luego, el ciclo normal:
 
 ```bash
 ./run.sh          # o en VSCode: Cmd+Shift+B

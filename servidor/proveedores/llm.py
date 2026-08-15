@@ -205,9 +205,16 @@ class LLMBedrock(ProveedorLLM):
         specs = []
         for h in herramientas:
             fn = h["function"]
+            # Bedrock exige description con al menos 1 caracter (a diferencia
+            # de OpenAI/Groq, que aceptan ""). Varias herramientas MCP no
+            # traen 'description' -- sin este fallback, Bedrock rechazaba la
+            # llamada ENTERA con un "Parameter validation failed" apenas
+            # alguna tool venia sin descripcion, aunque la tool en si nunca
+            # se fuera a usar en ese turno.
+            descripcion = fn.get("description") or fn["name"]
             specs.append({"toolSpec": {
                 "name": fn["name"],
-                "description": fn.get("description", ""),
+                "description": descripcion,
                 "inputSchema": {"json": fn.get("parameters") or {"type": "object", "properties": {}}},
             }})
         return {"tools": specs}

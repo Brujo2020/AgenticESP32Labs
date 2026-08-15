@@ -1,0 +1,23 @@
+# Spotpear ESP32-S3-1.28-BOX (N16R8)
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash 16MB
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# PSRAM 8MB en modo QUAD (no octal: el forzado a octal tumbaba el boot)
+# PSRAM DESACTIVADA a proposito.
+# El framebuffer (240x240x2 = 115KB) cabe en la RAM interna del S3 (512KB),
+# y la init de PSRAM es lo mas fragil del arranque. Se reactiva mas adelante,
+# cuando haga falta para buffers de audio, y con el modo ya verificado.
+# CONFIG_SPIRAM=y
+
+# CPU a full
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# USB nativo: consola por USB-CDC para ver logs sin adaptador serie
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

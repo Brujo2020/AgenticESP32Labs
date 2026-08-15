@@ -1,0 +1,18 @@
+{
+  "idf.espIdfPath": "/Users/mramospe/esp/esp-idf",
+  "idf.toolsPath": "/Users/mramospe/.espressif",
+  "idf.pythonBinPath": "/Users/mramospe/.espressif/python_env/idf6.0_py3.11_env/bin/python",
+  "idf.pythonInstallPath": "/Users/mramospe/.espressif/python_env/idf6.0_py3.11_env/bin/python",
+  "idf.adapterTargetName": "esp32s3",
+  "idf.port": "/dev/cu.usbmodem2101",
+  "idf.flashType": "UART",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_PATH": "/Users/mramospe/esp/esp-idf",
+    "IDF_TOOLS_PATH": "/Users/mramospe/.espressif",
+    "IDF_PYTHON_ENV_PATH": "/Users/mramospe/.espressif/python_env/idf6.0_py3.11_env"
+  },
+  "idf.currentSetup": "/Users/mramospe/esp/esp-idf"
+}

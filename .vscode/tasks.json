@@ -1,0 +1,17 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ESP32: compilar, flashear y capturar log",
+            "type": "shell",
+            "command": "${workspaceFolder}/run.sh",
+            "problemMatcher": [],
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        }
+    ]
+}

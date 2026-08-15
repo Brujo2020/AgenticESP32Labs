@@ -10,6 +10,7 @@
 #include "voice.h"
 #include "ajustes.h"
 #include "ui.h"
+#include "vistas.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -23,7 +24,9 @@
 #define CY 120
 
 static hud_state_t  s_state = ST_IDLE;
-static hud_screen_t s_scr   = SCR_NUCLEO;
+// int, no hud_screen_t: el indice ya supera el enum cuando hay vistas
+// dinamicas. El enum solo nombra las pantallas fijas.
+static int          s_scr   = SCR_NUCLEO;
 static int s_t = 0;                 // contador de fotogramas
 static int s_trans = 0;             // fotogramas restantes de transicion
 static int s_sel = 0;               // control seleccionado en AJUSTES
@@ -43,6 +46,31 @@ static const boton_t B_PREV = { .x = 8,   .y = 96, .w = 26, .h = 48,
 static const boton_t B_NEXT = { .x = 206, .y = 96, .w = 26, .h = 48,
                                 .txt = ">", .color = C_GREY, .escala_txt = 1 };
 
+// Cuantos caracteres caben en la fila 'y' empezando en 'x0' sin salirse
+// del cristal. La pantalla es redonda: a y=62 el borde util cae en x~225,
+// asi que 33 caracteres desde x=38 se pierden por fuera.
+static int ancho_seguro(int y, int x0)
+{
+    int dy = y + 3 - CY;
+    int semi2 = 118 * 118 - dy * dy;
+    if (semi2 <= 0) return 0;
+    int semi = 0;
+    while ((semi + 1) * (semi + 1) <= semi2) semi++;   // sqrt entera
+    int n = ((CX + semi) - x0) / 6;
+    return n < 0 ? 0 : n;
+}
+
+// Pinta recortando al circulo en vez de dejar que el texto se salga
+static void texto_recortado(int x, int y, const char *s, uint16_t c)
+{
+    char buf[40];
+    int n = ancho_seguro(y, x);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+    snprintf(buf, n + 1, "%s", s);
+    display_text(x, y, buf, c, 1);
+}
+
 static const char *NOMBRES[SCR_TOTAL] = {
     "NUCLEO","CRONO","ATMOS","VOZ","REGISTRO",
     "SENALES","MAQUINA","FORJA","AJUSTES","DIAG"
@@ -51,10 +79,14 @@ static const char *NOMBRES[SCR_TOTAL] = {
 void hud_init(void) { s_scr = SCR_NUCLEO; s_state = ST_IDLE; }
 void hud_set_state(hud_state_t s) { s_state = s; }
 hud_state_t hud_get_state(void) { return s_state; }
-hud_screen_t hud_screen(void) { return s_scr; }
+hud_screen_t hud_screen(void) { return (hud_screen_t)s_scr; }
 bool hud_en_ajustes(void) { return s_scr == SCR_AJUSTES; }
-void hud_next_screen(void) { s_scr = (s_scr + 1) % SCR_TOTAL; s_trans = 8; }
-static void hud_prev_screen(void) { s_scr = (s_scr + SCR_TOTAL - 1) % SCR_TOTAL; s_trans = 8; }
+// Pantallas fijas + las que el servidor haya declarado. Esto es lo que
+// permite anadir funciones sin reflashear: una vista nueva es una entrada
+// mas del carrusel, no un case nuevo en el switch.
+static int hud_total(void) { return SCR_TOTAL + vistas_num(); }
+void hud_next_screen(void) { int n = hud_total(); s_scr = (s_scr + 1) % n; s_trans = 8; }
+static void hud_prev_screen(void) { int n = hud_total(); s_scr = (s_scr + n - 1) % n; s_trans = 8; }
 bool hud_hablando(void) { return s_hablando; }
 
 // El boton grande del centro-abajo: hablar, o ajustar el control activo
@@ -64,7 +96,7 @@ static boton_t boton_accion(void)
     if (s_scr == SCR_AJUSTES)
         return (boton_t){ .x = 96, .y = 182, .w = 48, .h = 26,
                           .txt = "MAS", .color = ac, .escala_txt = 1 };
-    return (boton_t){ .x = 100, .y = 182, .w = 40, .h = 40, .redondo = true,
+    return (boton_t){ .x = 100, .y = 176, .w = 40, .h = 40, .redondo = true,
                       .txt = s_hablando ? ".." : "VOZ",
                       .color = s_hablando ? C_LIME : ac, .escala_txt = 1 };
 }
@@ -144,15 +176,24 @@ static void marco(void)
     int a0 = s_t % 360;
     display_arc(CX, CY, 117, 2, a0, a0 + 40, ac);
 
-    display_text_center(CX, 18, NOMBRES[s_scr], display_escala(ac, 230), 1);
+    const char *titulo = "";
+    if (s_scr < SCR_TOTAL) titulo = NOMBRES[s_scr];
+    else { vista_t *v = vistas_get(s_scr - SCR_TOTAL); if (v) titulo = v->titulo; }
+    display_text_center(CX, 18, titulo, display_escala(ac, 230), 1);
 
     // Indicadores de enlace, pequenos y bien separados
     display_fill_circle(CX - 30, 34, 2, net_connected()   ? C_LIME : C_BLOOD);
     display_fill_circle(CX,      34, 2, audio_ready()     ? C_LIME : C_BLOOD);
     display_fill_circle(CX + 30, 34, 2, voice_connected() ? C_LIME : C_BLOOD);
 
-    for (int i = 0; i < SCR_TOTAL; i++) {
-        int x = CX - 45 + i * 10;
+    // Paso adaptativo: con vistas dinamicas el numero de pantallas crece y
+    // un paso fijo de 10 px se saldria del cristal a partir de 12 pantallas.
+    int n = hud_total();
+    int paso = (n > 1) ? 110 / (n - 1) : 0;
+    if (paso > 10) paso = 10;
+    int x0 = CX - paso * (n - 1) / 2;
+    for (int i = 0; i < n; i++) {
+        int x = x0 + i * paso;
         if (i == s_scr) display_fill_circle(x, 224, 2, ac);
         else display_px(x, 224, display_escala(ac, 130));
     }
@@ -261,7 +302,7 @@ static void lista(int n, const char *(*get)(int), uint16_t col, const char *vaci
     int y = 62;
     for (int i = 0; i < n && i < 6; i++, y += 20) {
         display_fill_circle(28, y + 3, 2, col);
-        display_text(38, y, get(i), C_WHITE, 1);
+        texto_recortado(38, y, get(i), C_WHITE);
     }
 }
 
@@ -274,7 +315,7 @@ static void p_chat(void)
     for (int i = desde; i < n; i++, y += 20) {
         bool mio = voice_hist_es_mio(i);
         display_text(26, y, mio ? ">" : "<", mio ? C_CYAN : C_LIME, 1);
-        display_text(38, y, voice_hist(i), mio ? C_WHITE : C_LIME, 1);
+        texto_recortado(38, y, voice_hist(i), mio ? C_WHITE : C_LIME);
     }
 }
 
@@ -325,7 +366,8 @@ static void p_ajustes(void)
     conmutador(142, "LINEAS",  a->scanlines, s_sel == 3);
     conmutador(160, "REJILLA", a->rejilla,   s_sel == 4);
 
-    int marcas[5] = {66, 94, 122, 142, 160};
+    // Coinciden con la y real de cada etiqueta, no 4 px por debajo
+    int marcas[5] = {62, 90, 122, 142, 160};
     display_text(bx - 12, marcas[s_sel], ">", C_WHITE, 1);
 }
 
@@ -347,12 +389,101 @@ static void p_sistema(void)
                         audio_ready() ? C_LIME : C_BLOOD, 1);
 }
 
+// Pinta una vista declarada por el servidor. El firmware no sabe que
+// significan las filas: solo las coloca. Ahi esta la ganancia.
+static void p_vista(vista_t *v)
+{
+    if (!v) { display_text_center(CX, 112, "VISTA VACIA", C_GREY, 1); return; }
+    if (v->n_filas == 0) { display_text_center(CX, 112, "SIN DATOS", C_GREY, 1); return; }
+    int y = 62;
+    for (int i = 0; i < v->n_filas; i++, y += 20) {
+        display_fill_circle(28, y + 3, 2, v->acento);
+        texto_recortado(38, y, v->filas[i].txt, v->filas[i].color);
+        if (v->filas[i].badge[0]) {
+            int bx = CX + 62;
+            display_fill_circle(bx, y + 3, 6, display_escala(v->acento, 90));
+            display_text_center(bx, y, v->filas[i].badge, C_WHITE, 1);
+        }
+    }
+}
+
+// Pregunta a pantalla completa. Se come la navegacion a proposito: si el
+// agente esta esperando una decision, no debe poder ignorarse por accidente.
+static boton_t preg_boton(int i)
+{
+    int n = preg_num_opciones();
+    if (n < 1) n = 1;
+    int hueco = 8, total = 190;
+    int w = (total - (n - 1) * hueco) / n;
+    return (boton_t){ .x = CX - total / 2 + i * (w + hueco), .y = 150,
+                      .w = w, .h = 48,
+                      .txt = preg_opcion(i),
+                      .color = (i == 0) ? C_LIME : C_BLOOD, .escala_txt = 1 };
+}
+
+static void p_pregunta(void)
+{
+    display_clear(C_VOID);
+    uint16_t ac = ajustes_acento();
+    display_arc(CX, CY, 117, 2, 0, 359, ac);
+
+    display_text_center(CX, 30, "CONFIRMAR", display_escala(C_AMBER, 240), 1);
+
+    // El texto se parte por palabras: cortar a medias se lee fatal
+    const char *t = preg_texto();
+    char linea[28]; int li = 0, y = 66;
+    for (const char *p = t; ; p++) {
+        if (*p && *p != ' ' && li < (int)sizeof(linea) - 1) { linea[li++] = *p; continue; }
+        if (li > 0 && y < 140) {
+            linea[li] = 0;
+            display_text_center(CX, y, linea, C_WHITE, 1);
+            y += 16; li = 0;
+        }
+        if (!*p) break;
+    }
+
+    char seg[12];
+    snprintf(seg, sizeof(seg), "%ds", preg_segundos());
+    display_text_center(CX, 132, seg, display_escala(C_GREY, 200), 1);
+
+    for (int i = 0; i < preg_num_opciones(); i++) {
+        boton_t b = preg_boton(i);
+        ui_boton(&b, s_pulsado == 200 + i);
+    }
+    ui_ripple_dibuja();
+    display_flush();
+}
+
+// Banda superior de aviso. No roba la navegacion: solo informa.
+static void banda_noti(void)
+{
+    if (!noti_activa()) return;
+    uint16_t c = noti_color();
+    display_rect(0, 44, 240, 18, display_escala(c, 40));
+    display_rect(0, 44, 240, 1, c);
+    display_rect(0, 61, 240, 1, c);
+    display_text_center(CX, 48, noti_texto(), C_WHITE, 1);
+}
+
 // ============================================================
 //  Tactil
 // ============================================================
 void hud_touch_down(int x, int y)
 {
     s_t_down = esp_timer_get_time() / 1000;
+
+    if (preg_activa()) {                       // una decision pendiente manda
+        for (int i = 0; i < preg_num_opciones(); i++) {
+            boton_t b = preg_boton(i);
+            if (ui_dentro(&b, x, y)) {
+                s_pulsado = 200 + i;
+                ui_ripple_lanza(x, y, b.color);
+                return;
+            }
+        }
+        s_pulsado = -1;
+        return;
+    }
     boton_t acc = boton_accion();
     uint16_t ac = ajustes_acento();
 
@@ -363,10 +494,13 @@ void hud_touch_down(int x, int y)
         s_pulsado = -1;
         // Toque directo sobre una fila de AJUSTES: la selecciona
         if (s_scr == SCR_AJUSTES) {
-            if      (y < 112) s_sel = 0;
-            else if (y < 145) s_sel = 1;
-            else if (y < 168) s_sel = 2;
-            else if (y < 192) s_sel = 3;
+            // Puntos medios entre las filas reales (62/90/122/142/160).
+            // Las bandas anteriores (112/145/168/192) quedaron obsoletas
+            // al compactar el layout y seleccionaban la fila anterior.
+            if      (y < 84)  s_sel = 0;
+            else if (y < 113) s_sel = 1;
+            else if (y < 133) s_sel = 2;
+            else if (y < 152) s_sel = 3;
             else              s_sel = 4;
             ui_ripple_lanza(x, y, ac);
         }
@@ -375,7 +509,6 @@ void hud_touch_down(int x, int y)
 
 void hud_touch_hold(int x, int y)
 {
-    (void)x; (void)y;
     // Mantener el boton de voz activa el microfono
     if (s_pulsado == BTN_ACC && s_scr != SCR_AJUSTES && !s_hablando) {
         int64_t t = esp_timer_get_time() / 1000;
@@ -388,19 +521,39 @@ void hud_touch_hold(int x, int y)
 
 void hud_touch_up(int x, int y)
 {
-    (void)x; (void)y;
+    if (preg_activa()) {
+        if (s_pulsado >= 200) {
+            boton_t b = preg_boton(s_pulsado - 200);
+            if (ui_dentro(&b, x, y)) preg_responde(s_pulsado - 200);
+        }
+        s_pulsado = -1;
+        return;
+    }
     if (s_hablando) {
         voice_talk_stop();
         s_hablando = false;
         s_pulsado = -1;
         return;
     }
+    // Soltar fuera del boton cancela: el gesto estandar es poder arrastrar
+    // el dedo afuera para arrepentirse. Antes se ejecutaba igual.
+    if (s_pulsado >= 0) {
+        boton_t acc = boton_accion();
+        const boton_t *b = (s_pulsado == BTN_PREV) ? &B_PREV
+                         : (s_pulsado == BTN_NEXT) ? &B_NEXT : &acc;
+        if (!ui_dentro(b, x, y)) { s_pulsado = -1; return; }
+    }
     switch (s_pulsado) {
         case BTN_PREV: hud_prev_screen(); break;
         case BTN_NEXT: hud_next_screen(); break;
         case BTN_ACC:
-            if (s_scr == SCR_AJUSTES) hud_ajuste_incrementa();
-            else s_scr = SCR_VOZ;            // atajo a la pantalla de voz
+            if (s_scr == SCR_AJUSTES) {
+                // Toque corto mueve la seleccion, mantenido incrementa.
+                // hud_ajuste_siguiente() estaba exportada y muerta.
+                if (esp_timer_get_time() / 1000 - s_t_down < 400) hud_ajuste_siguiente();
+                else hud_ajuste_incrementa();
+            }
+            else { s_scr = SCR_VOZ; s_trans = 8; }   // atajo, ahora con transicion
             break;
     }
     s_pulsado = -1;
@@ -408,7 +561,16 @@ void hud_touch_up(int x, int y)
 
 void hud_render(void)
 {
+    vistas_purga();
+    preg_tick();
+
+    // Una pregunta pendiente toma la pantalla entera y sale por su cuenta
+    if (preg_activa()) { p_pregunta(); s_t++; return; }
+
+    if (s_scr >= hud_total()) s_scr = 0;      // una vista caduco bajo los pies
+
     marco();
+    if (s_scr >= SCR_TOTAL) { p_vista(vistas_get(s_scr - SCR_TOTAL)); goto encima; }
     switch (s_scr) {
         case SCR_NUCLEO:   p_nucleo();   break;
         case SCR_RELOJ:    p_reloj();    break;
@@ -422,6 +584,8 @@ void hud_render(void)
         default:           p_sistema();  break;
     }
 
+encima:
+    banda_noti();
     // Botones siempre encima del contenido
     ui_boton(&B_PREV, s_pulsado == BTN_PREV);
     ui_boton(&B_NEXT, s_pulsado == BTN_NEXT);

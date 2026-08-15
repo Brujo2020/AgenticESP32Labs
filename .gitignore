@@ -9,4 +9,5 @@ _to_delete/
 venv/
 __pycache__/
 *.pyc
+servidor/.env
 .git/_locks_viejos/

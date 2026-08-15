@@ -62,7 +62,18 @@ class Agente:
                 self.historial.append({"role": "assistant", "content": texto})
                 return texto
 
-            # El modelo pidio herramientas: se ejecutan y se le devuelven
+            # El modelo pidio herramientas: se ejecutan y se le devuelven.
+            # Si la cadena degrada a otro proveedor a mitad de conversacion,
+            # ese historial (con este mismo msg) se reenvia tal cual. Un
+            # tool_call sin argumentos puede llegar con arguments=None desde
+            # el proveedor original; algunos backends (el servidor OpenAI-
+            # compatible local, por ejemplo) exigen que sea un JSON string
+            # valido y rechazan null con 422. Se normaliza aqui, una vez,
+            # antes de que quede fijado en el historial.
+            for lc in llamadas:
+                fn_info = lc.get("function") or {}
+                if not fn_info.get("arguments"):
+                    fn_info["arguments"] = "{}"
             mensajes.append(msg)
             for lc in llamadas:
                 fn = lc["function"]["name"]

@@ -13,7 +13,10 @@ proveedores:
   # real, que es lo que hace que los MCP sirvan de algo.
   llm: [groq, nvidia, mlx]
   stt: [groq, mlx-whisper]
-  tts: [macos]
+  # Groq primero (misma clave que ya usas); macos de respaldo local si Groq
+  # falla o si su frecuencia de muestreo no encaja con el firmware (ver
+  # TTSOpenAICompatibleWav en proveedores/tts.py).
+  tts: [groq, macos]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
@@ -97,6 +100,14 @@ catalogo:
       api_key: "${OPENAI_API_KEY}"
 
   tts:
+    groq:                     # GRATIS/muy barato · misma GROQ_API_KEY del LLM y el STT
+      backend: "openai-compatible-wav"    # Groq solo devuelve WAV, nunca PCM crudo
+      base_url: "https://api.groq.com/openai/v1"
+      model: "canopylabs/orpheus-v1-english"
+      voice: "austin"
+      api_key: "${GROQ_API_KEY}"
+      description: "Groq (Orpheus) — misma clave que ya usas, sin cuenta nueva"
+
     macos:
       backend: "macos"
       voice: "Monica"
@@ -155,6 +166,19 @@ mcp_servers:
     type: "subprocess"
     command: ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
     env: { BRAVE_API_KEY: "${BRAVE_API_KEY}" }
+
+  # --- El ESP32 como herramienta (ver mcp_catalogo.yaml y PROTOCOLO.md) ---
+  # Faltaban aqui aunque ya estaban en tools_to_enable: activarlas fallaba
+  # con "esta en tools_to_enable pero no en mcp_servers".
+  dispositivo:
+    type: "subprocess"
+    command: ["python3", "mcps/dispositivo.py"]
+    env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+
+  vigia:
+    type: "subprocess"
+    command: ["python3", "mcps/vigia.py"]
+    env: { HUD_BRIDGE: "ws://127.0.0.1:8765", VIGIA_REPO: "${VIGIA_REPO}" }
 
 tools_to_enable:
   - clima

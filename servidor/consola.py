@@ -6,6 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from nucleo.entorno import carga_env
+carga_env()   # servidor/.env, si existe — ver panel.py
+
 from nucleo.agente import Agente
 from nucleo.config import Config
 from nucleo.mcp_pool import MCPPool
@@ -80,7 +83,7 @@ class ConsolaAsistente:
             else:
                 print("❌ No hay\n")
         elif cmd == "/limpiar":
-            self.agente.clear_history()
+            self.agente.limpiar()
             print("✅ Limpiado\n")
         elif cmd == "/salir":
             self.running = False

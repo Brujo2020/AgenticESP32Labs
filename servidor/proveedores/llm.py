@@ -51,10 +51,20 @@ class LLMCompatibleOpenAI(ProveedorLLM):
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=cuerpo,
                 )
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    # El texto de la respuesta trae la razon real (p.ej. que
+                    # herramienta/schema rechazo la API) - sin esto solo se ve
+                    # "400 Bad Request" y hay que adivinar la causa.
+                    raise ErrorProveedor(f"{self.nombre}: {r.status_code} {r.text}")
                 return r.json()["choices"][0]["message"]
+        except ErrorProveedor:
+            raise
         except Exception as e:
-            raise ErrorProveedor(f"{self.nombre}: {e}") from e
+            # Algunas excepciones (p.ej. httpx.ReadTimeout) tienen str(e)
+            # vacio - sin el nombre del tipo, el log solo dice "nvidia: "
+            # y no hay forma de saber si fue timeout, DNS, TLS, etc.
+            detalle = str(e) or type(e).__name__
+            raise ErrorProveedor(f"{self.nombre}: {detalle}") from e
 
 
 class LLMAnthropic(ProveedorLLM):

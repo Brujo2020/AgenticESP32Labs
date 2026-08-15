@@ -50,8 +50,19 @@ class MCPPool:
 
     async def _conecta(self, nombre: str, cfg: dict):
         entorno = {k: _expande(v) for k, v in (cfg.get("env") or {}).items()}
+        comando = cfg["command"][0]
+        # "python3"/"python" en config.yaml es una referencia generica: se
+        # resuelve al MISMO interprete que esta corriendo este proceso
+        # (sys.executable), no al que encuentre el PATH del subproceso. Sin
+        # esto, un MCP propio (mcps/clima.py, sistema.py, mac.py...) puede
+        # arrancar con un python3 distinto al del venv activo -> le falta el
+        # paquete 'mcp' o trae una version vieja sin mcp.server.fastmcp, y
+        # el fallo ("ModuleNotFoundError", "Connection closed") no deja ver
+        # que la causa es simplemente "el subproceso no es el venv correcto".
+        if comando in ("python3", "python"):
+            comando = sys.executable
         params = StdioServerParameters(
-            command=cfg["command"][0],
+            command=comando,
             args=cfg["command"][1:],
             env={**os.environ, **entorno},
         )
@@ -77,6 +88,10 @@ class MCPPool:
     def esquemas(self) -> list[dict]:
         """Herramientas en el formato que espera la API de OpenAI."""
         return [h["esquema"] for h in self.herramientas.values()]
+
+    def list_available_tools(self) -> list[str]:
+        """Nombres de las herramientas conectadas ahora mismo (usado por consola.py)."""
+        return list(self.herramientas)
 
     async def invoca(self, nombre: str, argumentos: dict) -> str:
         h = self.herramientas.get(nombre)

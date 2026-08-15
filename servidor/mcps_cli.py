@@ -15,6 +15,10 @@ AQUI = Path(__file__).parent
 CATALOGO = AQUI / "mcp_catalogo.yaml"
 CONFIG = AQUI / "config.yaml"
 
+sys.path.insert(0, str(AQUI))
+from nucleo.entorno import carga_env
+carga_env()   # servidor/.env, si existe — asi env_pendiente() ve las claves de panel.py
+
 V, R, A, Z, G, N = "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[90m", "\033[0m"
 
 

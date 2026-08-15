@@ -14,6 +14,12 @@ typedef enum {
     SCR_CREATIVO,
     SCR_AJUSTES,
     SCR_SISTEMA,
+    // Protocolo v2: hasta VISTA_MAX vistas declarativas con titulo libre
+    // (ver servidor/PROTOCOLO.md). Los huecos sin vista activa se saltan al
+    // navegar, asi que sin servidor v2 el carrusel se comporta exactamente
+    // como antes.
+    SCR_VISTA0,
+    SCR_VISTA_FIN = SCR_VISTA0 + 7,   // 8 slots: SCR_VISTA0..SCR_VISTA0+7
     SCR_TOTAL
 } hud_screen_t;
 

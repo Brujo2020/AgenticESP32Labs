@@ -1,7 +1,6 @@
 #include "ui.h"
 #include "display.h"
 #include <string.h>
-#include <math.h>
 
 // ---------- Onda de pulsacion ----------
 static int s_rx, s_ry, s_rt = -1;
@@ -18,9 +17,8 @@ void ui_ripple_dibuja(void)
     int r = 4 + s_rt * 5;
     uint8_t alpha = (uint8_t)(140 - s_rt * 20);
     for (int a = 0; a < 360; a += 4) {
-        float rad = a * (float)M_PI / 180.0f;
-        display_px_glow(s_rx + (int)(r * cosf(rad)),
-                        s_ry + (int)(r * sinf(rad)), s_rc, alpha);
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
+        display_px_glow(s_rx + r * cs / 4096, s_ry + r * sn / 4096, s_rc, alpha);
     }
     if (++s_rt > 6) s_rt = -1;
 }

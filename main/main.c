@@ -33,6 +33,55 @@ static void tarea_clima(void *arg)
     }
 }
 
+// net_init()/mDNS/voice_init() bloquean varios segundos en total. Antes se
+// pintaba "ESTABLECIENDO ENLACE" en un solo frame estatico y la pantalla se
+// quedaba congelada todo ese rato (parecia trabado, no "cargando"). Ahora
+// esa espera corre en su propia tarea y app_main() anima un spinner en el
+// hilo principal mientras tanto.
+static volatile bool s_red_lista = false;
+
+static void tarea_red(void *arg)
+{
+    if (net_init() == ESP_OK) {
+        net_sync_time();
+        xTaskCreate(tarea_clima, "clima", 4096, NULL, 4, NULL);
+        char ip[16]; int puerto = SERVIDOR_PORT;
+        if (net_descubre_servidor(ip, sizeof(ip), &puerto)) {
+            voice_init(ip, puerto);
+        } else {
+            ESP_LOGW(TAG, "mDNS sin respuesta, uso %s", SERVIDOR_HOST);
+            voice_init(SERVIDOR_HOST, SERVIDOR_PORT);
+        }
+    }
+    s_red_lista = true;
+    vTaskDelete(NULL);
+}
+
+// Spinner de carga: arco que gira mas rapido que cualquier animacion del
+// HUD normal, con texto grande, para que se vea claramente "cargando" y no
+// "colgado". display_cos_q/sin_q en vez de cosf/sinf (Grupo 2: fuera del
+// render las funciones trigonometricas float).
+static void anima_enlace(int f)
+{
+    display_clear(C_VOID);
+    int a0 = (f * 14) % 360;             // gira rapido: 14 grados por fotograma
+    for (int k = 0; k < 3; k++) {
+        int a = (a0 + k * 120) % 360;
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
+        display_arc(120, 120, 90 - k * 10, 3, a, a + 70,
+                    display_escala(C_CYAN, 255 - k * 60));
+        (void)cs; (void)sn;
+    }
+    display_text_center(120, 108, "ESTABLECIENDO", C_CYAN, 2);
+    display_text_center(120, 132, "ENLACE", C_CYAN, 2);
+    // Puntos animados, tipo "..." progresivo, para reforzar que avanza
+    char puntos[4] = {0};
+    int n = (f / 6) % 4;
+    for (int i = 0; i < n; i++) puntos[i] = '.';
+    display_text_center(120, 156, puntos, display_escala(C_CYAN, 200), 2);
+    display_flush();
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== Asistente ESP32-S3 ===");
@@ -55,22 +104,10 @@ void app_main(void)
 
     hud_boot_anim();            // secuencia de arranque
 
-    display_clear(C_VOID);
-    display_text_center(120, 110, "ESTABLECIENDO ENLACE", C_CYAN, 1);
-    display_flush();
-
-    if (net_init() == ESP_OK) {
-        net_sync_time();
-        xTaskCreate(tarea_clima, "clima", 4096, NULL, 4, NULL);
-        // Primero se busca el servidor por mDNS; si no aparece,
-        // se recurre a la direccion fija de arriba.
-        char ip[16]; int puerto = SERVIDOR_PORT;
-        if (net_descubre_servidor(ip, sizeof(ip), &puerto)) {
-            voice_init(ip, puerto);
-        } else {
-            ESP_LOGW(TAG, "mDNS sin respuesta, uso %s", SERVIDOR_HOST);
-            voice_init(SERVIDOR_HOST, SERVIDOR_PORT);
-        }
+    xTaskCreate(tarea_red, "red", 6144, NULL, 5, NULL);
+    for (int f = 0; !s_red_lista; f++) {
+        anima_enlace(f);
+        vTaskDelay(pdMS_TO_TICKS(33));      // ~30 FPS, mismo ritmo que el HUD
     }
 
     hud_init();

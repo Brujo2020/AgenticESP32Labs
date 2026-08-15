@@ -34,14 +34,26 @@ Navega con los botones laterales hasta **MÁQUINA** y verás las líneas.
 
 ### Qué destinos hay
 
-Con el firmware actual (protocolo v1) hay tres, que son pantallas que el
-firmware ya sabe pintar:
+**El firmware ya habla protocolo v2** (desde la versión 0.8.0): manda `hola`
+al conectar, y a partir de ahí el servidor deja de degradar a los tres
+canales fijos y usa vistas declarativas de verdad — hasta 8, con título
+libre, acento y badges por fila. `hud_preguntar` también funciona: el HUD
+toma la pantalla completa, pinta hasta 3 botones y bloquea hasta que tocas
+uno o vence el plazo.
+
+Si el ESP32 corre un firmware más viejo (anterior a esta versión, sin el
+handshake `hola`), el servidor sigue detectándolo solo y se degrada a los
+tres canales fijos de siempre:
 
 | Destino | Pantalla | Líneas |
 |---------|----------|--------|
 | `senales` | SEÑALES | 5 |
 | `maquina` | MÁQUINA | 7 |
 | `forja` | FORJA | 7 |
+
+En ese caso `hud_preguntar`, `hud_preguntar_async`/`hud_consultar` y
+`hud_notificar` no funcionan tal cual (ver la tabla de abajo): hace falta
+reflashear con el firmware actual.
 
 Con el protocolo v2 pasan a ser 8 vistas con título libre, y se desbloquea
 `preguntar`, la aprobación física a pantalla completa.
@@ -124,12 +136,12 @@ El silencio cuenta como negativa, nunca como consentimiento.
 
 ## Herramientas MCP disponibles
 
-| Tool | Estado con firmware v1 |
-|------|------------------------|
-| `hud_mostrar` | funciona, con los tres destinos fijos |
-| `hud_borrar` | funciona |
-| `hud_notificar` | funciona, se ve en la pantalla VOZ |
-| `hablar` | funciona |
-| `dispositivo_estado` | funciona |
-| `hud_preguntar` | **necesita protocolo v2** |
-| `hud_preguntar_async` + `hud_consultar` | **necesita protocolo v2** |
+| Tool | Con firmware v2 (actual) | Con firmware v1 (antiguo) |
+|------|--------------------------|---------------------------|
+| `hud_mostrar` | 8 vistas, título libre, acento y badge por fila | 3 destinos fijos |
+| `hud_borrar` | funciona | funciona |
+| `hud_notificar` | banda superior 4 s, con nivel y color | se ve como texto en la pantalla VOZ |
+| `hablar` | funciona | funciona |
+| `dispositivo_estado` | funciona | funciona |
+| `hud_preguntar` | pantalla completa, hasta 3 botones, bloqueante | no disponible |
+| `hud_preguntar_async` + `hud_consultar` | funciona | no disponible |

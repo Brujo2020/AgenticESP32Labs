@@ -148,10 +148,9 @@ void display_fill_circle(int cx, int cy, int r, uint16_t c)
 void display_arc(int cx, int cy, int r, int grosor, int a0, int a1, uint16_t c)
 {
     for (int a = a0; a <= a1; a++) {
-        float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
         for (int t = 0; t < grosor; t++)
-            display_px(cx + (int)((r - t) * cs), cy + (int)((r - t) * sn), c);
+            display_px(cx + (r - t) * cs / 4096, cy + (r - t) * sn / 4096, c);
     }
 }
 
@@ -236,6 +235,56 @@ void display_set_brightness(int pct)
 int display_brightness(void) { return s_brillo; }
 
 // ============================================================
+//  Trigonometria por tabla (Grupo 2)
+// ============================================================
+// sin(grado) * 4096 para grado en [0, 359]. Generada una vez con Python
+// (math.sin), no en el ESP32: es una tabla, no un calculo de arranque.
+// El coseno se lee de la misma tabla con un desfase de 90 grados: cos(x) =
+// sin(x + 90), asi que no hace falta una segunda tabla.
+static const int16_t TABLA_SIN[360] = {
+    0, 71, 143, 214, 286, 357, 428, 499, 570, 641, 711, 782,
+    852, 921, 991, 1060, 1129, 1198, 1266, 1334, 1401, 1468, 1534, 1600,
+    1666, 1731, 1796, 1860, 1923, 1986, 2048, 2110, 2171, 2231, 2290, 2349,
+    2408, 2465, 2522, 2578, 2633, 2687, 2741, 2793, 2845, 2896, 2946, 2996,
+    3044, 3091, 3138, 3183, 3228, 3271, 3314, 3355, 3396, 3435, 3474, 3511,
+    3547, 3582, 3617, 3650, 3681, 3712, 3742, 3770, 3798, 3824, 3849, 3873,
+    3896, 3917, 3937, 3956, 3974, 3991, 4006, 4021, 4034, 4046, 4056, 4065,
+    4074, 4080, 4086, 4090, 4094, 4095, 4096, 4095, 4094, 4090, 4086, 4080,
+    4074, 4065, 4056, 4046, 4034, 4021, 4006, 3991, 3974, 3956, 3937, 3917,
+    3896, 3873, 3849, 3824, 3798, 3770, 3742, 3712, 3681, 3650, 3617, 3582,
+    3547, 3511, 3474, 3435, 3396, 3355, 3314, 3271, 3228, 3183, 3138, 3091,
+    3044, 2996, 2946, 2896, 2845, 2793, 2741, 2687, 2633, 2578, 2522, 2465,
+    2408, 2349, 2290, 2231, 2171, 2110, 2048, 1986, 1923, 1860, 1796, 1731,
+    1666, 1600, 1534, 1468, 1401, 1334, 1266, 1198, 1129, 1060, 991, 921,
+    852, 782, 711, 641, 570, 499, 428, 357, 286, 214, 143, 71,
+    0, -71, -143, -214, -286, -357, -428, -499, -570, -641, -711, -782,
+    -852, -921, -991, -1060, -1129, -1198, -1266, -1334, -1401, -1468, -1534, -1600,
+    -1666, -1731, -1796, -1860, -1923, -1986, -2048, -2110, -2171, -2231, -2290, -2349,
+    -2408, -2465, -2522, -2578, -2633, -2687, -2741, -2793, -2845, -2896, -2946, -2996,
+    -3044, -3091, -3138, -3183, -3228, -3271, -3314, -3355, -3396, -3435, -3474, -3511,
+    -3547, -3582, -3617, -3650, -3681, -3712, -3742, -3770, -3798, -3824, -3849, -3873,
+    -3896, -3917, -3937, -3956, -3974, -3991, -4006, -4021, -4034, -4046, -4056, -4065,
+    -4074, -4080, -4086, -4090, -4094, -4095, -4096, -4095, -4094, -4090, -4086, -4080,
+    -4074, -4065, -4056, -4046, -4034, -4021, -4006, -3991, -3974, -3956, -3937, -3917,
+    -3896, -3873, -3849, -3824, -3798, -3770, -3742, -3712, -3681, -3650, -3617, -3582,
+    -3547, -3511, -3474, -3435, -3396, -3355, -3314, -3271, -3228, -3183, -3138, -3091,
+    -3044, -2996, -2946, -2896, -2845, -2793, -2741, -2687, -2633, -2578, -2522, -2465,
+    -2408, -2349, -2290, -2231, -2171, -2110, -2048, -1986, -1923, -1860, -1796, -1731,
+    -1666, -1600, -1534, -1468, -1401, -1334, -1266, -1198, -1129, -1060, -991, -921,
+    -852, -782, -711, -641, -570, -499, -428, -357, -286, -214, -143, -71,
+};
+
+static inline int grados_norm(int g)
+{
+    g %= 360;
+    if (g < 0) g += 360;
+    return g;
+}
+
+int32_t display_sin_q(int grados) { return TABLA_SIN[grados_norm(grados)]; }
+int32_t display_cos_q(int grados) { return TABLA_SIN[grados_norm(grados + 90)]; }
+
+// ============================================================
 //  Color
 // ============================================================
 uint16_t display_escala(uint16_t c, uint8_t f)
@@ -285,12 +334,11 @@ void display_line(int x0, int y0, int x1, int y1, uint16_t c)
 void display_arc_glow(int cx, int cy, int r, int grosor, int a0, int a1, uint16_t c)
 {
     for (int a = a0; a <= a1; a++) {
-        float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
         for (int t = -2; t < grosor + 2; t++) {
             int borde = (t < 0 || t >= grosor);
-            int px = cx + (int)((r - t) * cs);
-            int py = cy + (int)((r - t) * sn);
+            int px = cx + (r - t) * cs / 4096;
+            int py = cy + (r - t) * sn / 4096;
             if (borde) display_px_glow(px, py, c, 70);
             else       display_px(px, py, c);
         }
@@ -305,10 +353,9 @@ void display_arc_grad(int cx, int cy, int r, int grosor, int a0, int a1,
     for (int a = a0; a <= a1; a++) {
         uint8_t t = (uint8_t)((a - a0) * 255 / span);
         uint16_t c = display_mezcla(c0, c1, t);
-        float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
         for (int k = 0; k < grosor; k++)
-            display_px(cx + (int)((r - k) * cs), cy + (int)((r - k) * sn), c);
+            display_px(cx + (r - k) * cs / 4096, cy + (r - k) * sn / 4096, c);
     }
 }
 
@@ -316,10 +363,15 @@ void display_arc_grad(int cx, int cy, int r, int grosor, int a0, int a1,
 void display_ring_dots(int cx, int cy, int r, int n, int fase, uint16_t c)
 {
     for (int i = 0; i < n; i++) {
-        float a = (fase + i * 360 / n) * (float)M_PI / 180.0f;
-        int x = cx + (int)(r * cosf(a));
-        int y = cy + (int)(r * sinf(a));
-        uint8_t brillo = 90 + (uint8_t)(120 * (0.5f + 0.5f * sinf((fase + i * 40) * 0.05f)));
+        int a = fase + i * 360 / n;
+        int x = cx + r * display_cos_q(a) / 4096;
+        int y = cy + r * display_sin_q(a) / 4096;
+        // Modulacion de brillo: angulo arbitrario (no cae en grados enteros
+        // de la posicion), pero sigue sin necesitar sinf: se redondea al
+        // grado mas cercano y se lee de la misma tabla.
+        int a_brillo = (int)((fase + i * 40) * 0.05f * (180.0f / (float)M_PI) + 0.5f);
+        int32_t sn = display_sin_q(a_brillo);           // -4096..4096
+        uint8_t brillo = 90 + (uint8_t)(60 + 60 * sn / 4096);
         display_fill_circle(x, y, 2, display_escala(c, brillo));
         display_px_glow(x + 1, y, c, 60);
         display_px_glow(x - 1, y, c, 60);
@@ -374,10 +426,11 @@ void display_corchetes(int r, uint16_t c)
     const int angs[4] = {45, 135, 225, 315};
     for (int i = 0; i < 4; i++) {
         for (int d = -14; d <= 14; d++) {
-            float a = (angs[i] + d) * (float)M_PI / 180.0f;
+            int a = angs[i] + d;
+            int32_t cs = display_cos_q(a), sn = display_sin_q(a);
             for (int k = 0; k < 2; k++)
-                display_px(120 + (int)((r - k) * cosf(a)),
-                           120 + (int)((r - k) * sinf(a)), c);
+                display_px(120 + (r - k) * cs / 4096,
+                           120 + (r - k) * sn / 4096, c);
         }
     }
 }

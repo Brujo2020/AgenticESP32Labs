@@ -24,6 +24,18 @@
 
 esp_err_t display_init(void);
 
+// ---------- Trigonometria por tabla ----------
+// El render usa cosf/sinf en el camino caliente (un arco de 360 grados con
+// glow llama a cosf+sinf mas de mil veces por fotograma) y siempre con
+// angulos en grados. cosf/sinf de newlib no tienen FPU de trig en el S3:
+// son software, y ese coste se paga en cada fotograma para un resultado
+// que ya conocemos de antemano. display_sin_q()/display_cos_q() devuelven
+// el valor en punto fijo Q12 (escala 4096) leido de una tabla de 360
+// entradas (720 bytes), exacto para angulos enteros. Para escalar de vuelta:
+// (r * display_cos_q(a)) / 4096.
+int32_t display_sin_q(int grados);
+int32_t display_cos_q(int grados);
+
 // ---------- Brillo por PWM (el backlight es de logica invertida) ----------
 void display_set_brightness(int pct);      // 0..100
 int  display_brightness(void);

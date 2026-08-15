@@ -15,6 +15,9 @@ Protocolo (ws://0.0.0.0:8765):
 import asyncio, json, os, socket, subprocess, tempfile, wave, logging
 import websockets
 
+from nucleo.entorno import carga_env
+carga_env()   # servidor/.env, si existe — ver panel.py. No pisa el entorno real.
+
 from nucleo import Agente, Config, MCPPool
 from nucleo.canal import CANAL
 from nucleo.guardia import GUARDIA, Rechazo
@@ -272,7 +275,15 @@ async def atiende(ws):
                 buffer.extend(msg)
                 continue
 
-            data = json.loads(msg)
+            try:
+                data = json.loads(msg)
+            except json.JSONDecodeError:
+                # Un mensaje mal formado (truncado, cortado a mitad de un
+                # frame, un firmware con un bug como el de voice_talk_stop
+                # mandando un JSON incompleto) no puede tirar toda la
+                # conexion: se descarta ese mensaje y se sigue escuchando.
+                log.warning("mensaje no-JSON del ESP32, se descarta: %r", msg[:80])
+                continue
             if data.get("t") == "ping":
                 continue
 

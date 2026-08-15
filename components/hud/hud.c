@@ -30,6 +30,22 @@ static int s_sel = 0;               // control seleccionado en AJUSTES
 static int  s_pulsado = -1;         // boton bajo el dedo ahora mismo
 static bool s_hablando = false;
 static int64_t s_t_down = 0;
+// Corte automatico por silencio: si nadie sabe que soltar el dedo detiene la
+// escucha (o el toque de "soltar" no se registra bien en el tactil real),
+// el microfono se quedaba grabando indefinidamente. Se corta solo tras unos
+// segundos sin nivel de voz, y ademas el boton pasa a ser un cuadrado rojo
+// de "STOP" bien reconocible mientras se escucha (ver boton_accion()).
+static int64_t s_ultimo_sonido = 0;
+#define SILENCIO_UMBRAL 4        // audio_mic_level() es 0..100
+#define SILENCIO_MS     4000
+// Anti-rebote del boton de voz: sin esto, un toque un poco largo o un dedo
+// que tiembla puede registrarse como "toca, suelta, toca" en pocos ms y
+// arrancar/parar la escucha varias veces seguidas (el famoso "se vuelve
+// loco"). Tras CADA cambio de estado (arrancar o parar) se ignora el boton
+// durante COOLDOWN_MS, tanto para volver a arrancar como para volver a
+// parar -- asi un segundo toque pegado al primero no hace nada.
+static int64_t s_cooldown_hasta = 0;
+#define COOLDOWN_MS 500
 // Ultima posicion valida del dedo. Hace falta porque al soltar, touch_get()
 // devuelve false sin escribir las coordenadas, y main.c reenvia los ceros con
 // que las inicializa. Es decir: hud_touch_up() SIEMPRE recibe (0,0) y esas
@@ -41,6 +57,9 @@ static int s_ux = -1, s_uy = -1;
 #define BTN_PREV 100
 #define BTN_NEXT 101
 #define BTN_ACC  102        // accion principal, cambia segun pantalla
+#define BTN_PREG0 110       // opciones de una 'pregunta' (protocolo v2), hasta 3
+#define BTN_PREG1 111
+#define BTN_PREG2 112
 
 // Se dibujan discretos, pero ui_dentro() amplia el area de toque:
 // pequeno a la vista, comodo para el pulgar.
@@ -87,18 +106,69 @@ static void texto_recortado(int x, int y, const char *t, uint16_t c)
     display_text(x, y, buf, c, 1);
 }
 
-static const char *NOMBRES[SCR_TOTAL] = {
+static const char *NOMBRES_FIJAS[SCR_VISTA0] = {
     "NUCLEO","CRONO","ATMOS","VOZ","REGISTRO",
     "SENALES","MAQUINA","FORJA","AJUSTES","DIAG"
 };
+
+// ============================================================
+//  Protocolo v2 — vistas declarativas (Grupo 3)
+// ============================================================
+// Las pantallas fijas siempre existen. Los slots SCR_VISTA0.. solo existen
+// mientras haya una vista activa en esa posicion del carrusel: sin servidor
+// v2 (o sin vistas emitidas), pantalla_existe() los descarta todos y el HUD
+// navega exactamente igual que antes de este protocolo.
+static bool es_vista_slot(hud_screen_t s) { return s >= SCR_VISTA0 && s <= SCR_VISTA_FIN; }
+
+static bool pantalla_existe(hud_screen_t s)
+{
+    if (!es_vista_slot(s)) return true;
+    return (s - SCR_VISTA0) < voice_vistas_num();
+}
+
+static const char *nombre_pantalla(hud_screen_t s)
+{
+    if (!es_vista_slot(s)) return NOMBRES_FIJAS[s];
+    const vista_t *v = voice_vista(s - SCR_VISTA0);
+    return v ? v->titulo : "VACIO";
+}
+
+static uint16_t color_por_nombre(const char *n)
+{
+    if (!strcmp(n, "cyan"))    return C_CYAN;
+    if (!strcmp(n, "magenta")) return C_MAGENTA;
+    if (!strcmp(n, "lime"))    return C_LIME;
+    if (!strcmp(n, "amber"))   return C_AMBER;
+    if (!strcmp(n, "ice"))     return C_ICE;
+    if (!strcmp(n, "blood"))   return C_BLOOD;
+    if (!strcmp(n, "grey"))    return C_GREY;
+    return C_WHITE;    // "white" y cualquier valor desconocido: nunca un color al azar
+}
 
 void hud_init(void) { s_scr = SCR_NUCLEO; s_state = ST_IDLE; }
 void hud_set_state(hud_state_t s) { s_state = s; }
 hud_state_t hud_get_state(void) { return s_state; }
 hud_screen_t hud_screen(void) { return s_scr; }
 bool hud_en_ajustes(void) { return s_scr == SCR_AJUSTES; }
-void hud_next_screen(void) { s_scr = (s_scr + 1) % SCR_TOTAL; s_trans = 8; }
-static void hud_prev_screen(void) { s_scr = (s_scr + SCR_TOTAL - 1) % SCR_TOTAL; s_trans = 8; }
+
+void hud_next_screen(void)
+{
+    hud_screen_t s = s_scr;
+    for (int i = 0; i < SCR_TOTAL; i++) {
+        s = (s + 1) % SCR_TOTAL;
+        if (pantalla_existe(s)) { s_scr = s; break; }
+    }
+    s_trans = 8;
+}
+static void hud_prev_screen(void)
+{
+    hud_screen_t s = s_scr;
+    for (int i = 0; i < SCR_TOTAL; i++) {
+        s = (s + SCR_TOTAL - 1) % SCR_TOTAL;
+        if (pantalla_existe(s)) { s_scr = s; break; }
+    }
+    s_trans = 8;
+}
 bool hud_hablando(void) { return s_hablando; }
 
 // El boton grande del centro-abajo: hablar, o ajustar el control activo
@@ -108,9 +178,14 @@ static boton_t boton_accion(void)
     if (s_scr == SCR_AJUSTES)
         return (boton_t){ .x = 96, .y = 182, .w = 48, .h = 26,
                           .txt = "MAS", .color = ac, .escala_txt = 1 };
+    // Mientras escucha, el boton cambia de circulo a CUADRADO ROJO: una
+    // forma de "stop" reconocible al vuelo, en vez de un circulo casi igual
+    // al de reposo con solo el texto distinto.
+    if (s_hablando)
+        return (boton_t){ .x = 100, .y = 176, .w = 40, .h = 40, .redondo = false,
+                          .txt = "STOP", .color = C_BLOOD, .escala_txt = 1 };
     return (boton_t){ .x = 100, .y = 176, .w = 40, .h = 40, .redondo = true,
-                      .txt = s_hablando ? ".." : "VOZ",
-                      .color = s_hablando ? C_LIME : ac, .escala_txt = 1 };
+                      .txt = "VOZ", .color = ac, .escala_txt = 1 };
 }
 void hud_ajuste_siguiente(void) { s_sel = (s_sel + 1) % 5; }
 
@@ -144,9 +219,12 @@ void hud_boot_anim(void)
             uint8_t br = (uint8_t)(255 - r * 180 / 130);
             display_circle(CX, CY, r, display_escala(ac, br));
         }
-        // Barrido radial
-        float a = f * 0.28f;
-        display_line(CX, CY, CX + (int)(115 * cosf(a)), CY + (int)(115 * sinf(a)),
+        // Barrido radial. f*0.28f eran radianes arbitrarios; se redondea al
+        // grado entero mas cercano para leer de la tabla en vez de llamar a
+        // cosf/sinf (Grupo 2: fuera del render, ver display_sin_q/cos_q).
+        int a = (int)(f * 0.28f * (180.0f / (float)M_PI) + 0.5f);
+        display_line(CX, CY, CX + 115 * display_cos_q(a) / 4096,
+                     CY + 115 * display_sin_q(a) / 4096,
                      display_escala(ac, 150));
 
         // La marca aparece letra a letra
@@ -181,6 +259,12 @@ static uint16_t color_estado(void)
 static void marco(void)
 {
     uint16_t ac = ajustes_acento();
+    // Una vista declarativa trae su propio 'acento' (protocolo v2): se
+    // respeta en vez del acento global mientras se este viendo esa vista.
+    if (es_vista_slot(s_scr)) {
+        const vista_t *v = voice_vista(s_scr - SCR_VISTA0);
+        if (v) ac = color_por_nombre(v->acento);
+    }
     display_clear(C_VOID);
 
     // Un aro fino y un arco de actividad corto. Nada mas.
@@ -188,16 +272,25 @@ static void marco(void)
     int a0 = s_t % 360;
     display_arc(CX, CY, 117, 2, a0, a0 + 40, ac);
 
-    display_text_center(CX, 18, NOMBRES[s_scr], display_escala(ac, 230), 1);
+    display_text_center(CX, 18, nombre_pantalla(s_scr), display_escala(ac, 230), 1);
 
     // Indicadores de enlace, pequenos y bien separados
     display_fill_circle(CX - 30, 34, 2, net_connected()   ? C_LIME : C_BLOOD);
     display_fill_circle(CX,      34, 2, audio_ready()     ? C_LIME : C_BLOOD);
     display_fill_circle(CX + 30, 34, 2, voice_connected() ? C_LIME : C_BLOOD);
 
-    for (int i = 0; i < SCR_TOTAL; i++) {
-        int x = CX - 45 + i * 10;
-        if (i == (int)s_scr) display_fill_circle(x, 224, 2, ac);
+    // Puntos del carrusel: solo por las pantallas que existen de verdad (las
+    // fijas, mas las vistas activas). Sin eso, 8 huecos vacios de protocolo
+    // v2 desparramarian los puntos aunque no haya ninguna vista emitida.
+    int total = 0, actual = 0;
+    for (int s = 0; s < SCR_TOTAL; s++) {
+        if (!pantalla_existe((hud_screen_t)s)) continue;
+        if (s == s_scr) actual = total;
+        total++;
+    }
+    for (int i = 0; i < total; i++) {
+        int x = CX - (total * 10) / 2 + i * 10 + 5;
+        if (i == actual) display_fill_circle(x, 224, 2, ac);
         else display_px(x, 224, display_escala(ac, 130));
     }
 }
@@ -283,19 +376,23 @@ static void p_voz(void)
     // Corona de barras radiales que reacciona a la voz
     // 16 barras finas: sugieren el nivel sin comerse la pantalla
     for (int i = 0; i < 16; i++) {
-        float a = i * 22.5f * (float)M_PI / 180.0f;
+        // 22.5 grados por barra: fraccion de grado, redondeada al entero mas
+        // cercano para caer en la tabla (1 px de desviacion medida, aceptable
+        // para una barra de nivel).
+        int a = (int)(i * 22.5f + 0.5f);
         int alto = 5 + (lvl * 5) / 30;
         if (alto > 18) alto = 18;
+        int32_t cs = display_cos_q(a), sn = display_sin_q(a);
         for (int k = 0; k < alto; k++) {
             int r = 84 + k;
-            display_px(CX + (int)(r * cosf(a)), CY + (int)(r * sinf(a)), col);
+            display_px(CX + r * cs / 4096, CY + r * sn / 4096, col);
         }
     }
     display_text_center(CX, 104, txt, col, 1);
 
     const char *msg = voice_text();
     if (msg && msg[0]) display_text_center(CX, 126, msg, C_WHITE, 1);
-    else display_text_center(CX, 126, voice_connected() ? "MANTEN PARA HABLAR" : "SIN SERVIDOR",
+    else display_text_center(CX, 126, voice_connected() ? "TOCA PARA HABLAR" : "SIN SERVIDOR",
                              voice_connected() ? C_GREY : C_BLOOD, 1);
 }
 
@@ -328,6 +425,75 @@ static void p_mac(void)      { lista(voice_mac_num(), voice_mac, C_CYAN,
                                      voice_connected() ? "MIDIENDO" : "SIN SERVIDOR"); }
 static void p_creativo(void) { lista(voice_creativo_num(), voice_creativo, C_MAGENTA,
                                      voice_connected() ? "CONSULTANDO" : "SIN SERVIDOR"); }
+
+// Vista declarativa (protocolo v2): cada fila trae su propio color y un
+// badge opcional, a diferencia de 'lista()' que pinta todo con un color fijo.
+static void p_vista(int idx)
+{
+    const vista_t *v = voice_vista(idx);
+    if (!v || v->n_filas == 0) {
+        display_text_center(CX, 112, "SIN DATOS", C_GREY, 1);
+        return;
+    }
+    int y = 62;
+    for (int i = 0; i < v->n_filas; i++, y += 20) {
+        uint16_t col = color_por_nombre(v->filas[i].color);
+        display_fill_circle(MARGEN_IZQ, y + 3, 2, col);
+        texto_recortado(TXT_IZQ, y, v->filas[i].txt, col);
+        if (v->filas[i].con_badge)
+            display_text(MARGEN_DER - 18, y, v->filas[i].badge, col, 1);
+    }
+}
+
+// ============================================================
+//  Pregunta bloqueante (protocolo v2): pantalla completa, sin marco ni
+//  navegacion. Es el canal de aprobacion fisica: mientras este activa, el
+//  HUD no hace otra cosa.
+// ============================================================
+static boton_t boton_pregunta(int i, int n)
+{
+    int w = 60, h = 44, gap = 8;
+    int total_w = n * w + (n - 1) * gap;
+    int x0 = CX - total_w / 2;
+    boton_t b = { .x = x0 + i * (w + gap), .y = 150, .w = w, .h = h,
+                  .txt = voice_pregunta_opcion(i), .color = C_AMBER, .escala_txt = 1 };
+    return b;
+}
+
+static void p_pregunta(void)
+{
+    display_clear(C_VOID);
+    display_arc(CX, CY, 117, 2, 0, 359, display_escala(C_AMBER, 140));
+    display_text_center(CX, 30, "APROBACION", C_AMBER, 1);
+
+    // El texto puede ocupar mas de una linea corta: se parte en 2 por
+    // sencillez, en vez de meter un word-wrap completo para esto.
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s", voice_pregunta_txt());
+    size_t n = strlen(buf);
+    if (n > 22) {
+        char l1[24], l2[24];
+        snprintf(l1, sizeof(l1), "%.22s", buf);
+        // Precision explicita tambien aqui: "buf+22" puede tener hasta 41
+        // caracteres restantes (buf mide 64) y l2 solo 24 — sin el ".*"
+        // GCC lo marca como -Werror=format-truncation, igual que en voice.c.
+        snprintf(l2, sizeof(l2), "%.*s", (int)sizeof(l2) - 1, buf + 22);
+        display_text_center(CX, 70, l1, C_WHITE, 1);
+        display_text_center(CX, 88, l2, C_WHITE, 1);
+    } else {
+        display_text_center(CX, 80, buf, C_WHITE, 1);
+    }
+
+    char t[16];
+    snprintf(t, sizeof(t), "%ds", voice_pregunta_segundos_restantes());
+    display_text_center(CX, 110, t, C_GREY, 1);
+
+    int n_op = voice_pregunta_num_opciones();
+    for (int i = 0; i < n_op; i++) {
+        boton_t b = boton_pregunta(i, n_op);
+        ui_boton(&b, s_pulsado == BTN_PREG0 + i);
+    }
+}
 
 static void barra(int y, const char *etiqueta, int pct, uint16_t col, bool sel)
 {
@@ -403,6 +569,19 @@ void hud_touch_down(int x, int y)
 {
     s_t_down = esp_timer_get_time() / 1000;
     s_ux = x; s_uy = y;
+
+    // La pregunta bloqueante toma toda la pantalla: mientras este activa, ni
+    // los botones de navegacion ni el de accion existen para el tacto.
+    if (voice_pregunta_activa()) {
+        int n_op = voice_pregunta_num_opciones();
+        s_pulsado = -1;
+        for (int i = 0; i < n_op; i++) {
+            boton_t b = boton_pregunta(i, n_op);
+            if (ui_dentro(&b, x, y)) { s_pulsado = BTN_PREG0 + i; ui_ripple_lanza(x, y, C_AMBER); break; }
+        }
+        return;
+    }
+
     boton_t acc = boton_accion();
     uint16_t ac = ajustes_acento();
 
@@ -435,24 +614,35 @@ void hud_touch_down(int x, int y)
 void hud_touch_hold(int x, int y)
 {
     s_ux = x; s_uy = y;
-    // Mantener el boton de voz activa el microfono
-    if (s_pulsado == BTN_ACC && s_scr != SCR_AJUSTES && !s_hablando) {
-        int64_t t = esp_timer_get_time() / 1000;
-        if (t - s_t_down > 250) {
-            s_hablando = true;
-            voice_talk_start();
-        }
-    }
+    // Ya no hace falta mantener presionado para empezar a hablar (ver
+    // hud_touch_up): un solo toque basta. Antes esto exigia un gesto de
+    // "mantener 250ms" ademas del toque normal para navegar, y en el
+    // tactil real el evento de "hold" no siempre llega de forma fiable
+    // -- resultado: a veces no arrancaba la escucha por mas que se
+    // mantuviera el dedo. Se deja la funcion (main.c la sigue llamando)
+    // pero sin logica propia: solo actualiza la ultima posicion del dedo.
 }
 
 void hud_touch_up(int x, int y)
 {
     // Las coordenadas al soltar no son fiables, ver s_ux/s_uy
     (void)x; (void)y;
+    if (voice_pregunta_activa()) {
+        if (s_pulsado >= BTN_PREG0 && s_pulsado <= BTN_PREG2 && s_ux >= 0) {
+            int i = s_pulsado - BTN_PREG0;
+            boton_t b = boton_pregunta(i, voice_pregunta_num_opciones());
+            if (ui_dentro(&b, s_ux, s_uy)) voice_pregunta_responde(i);
+        }
+        s_pulsado = -1;
+        return;
+    }
     if (s_hablando) {
+        int64_t ahora = esp_timer_get_time() / 1000;
+        if (ahora < s_cooldown_hasta) { s_pulsado = -1; return; }   // toque pegado, se ignora
         voice_talk_stop();
         s_hablando = false;
         s_pulsado = -1;
+        s_cooldown_hasta = ahora + COOLDOWN_MS;   // margen antes de poder volver a arrancar
         return;
     }
     // Soltar fuera del boton cancela: el gesto estandar es poder arrastrar el
@@ -474,16 +664,72 @@ void hud_touch_up(int x, int y)
                 if (esp_timer_get_time() / 1000 - s_t_down < 400) hud_ajuste_siguiente();
                 else hud_ajuste_incrementa();
             }
-            else { s_scr = SCR_VOZ; s_trans = 8; }   // atajo, ahora con transicion
+            else {
+                // Un solo toque arranca a escuchar (antes hacia falta
+                // mantener presionado 250ms, ver hud_touch_hold). Al
+                // arrancar, salta a la pantalla VOZ para ver el estado.
+                int64_t ahora = esp_timer_get_time() / 1000;
+                if (ahora < s_cooldown_hasta) break;   // muy pegado a un stop reciente, se ignora
+                s_hablando = true;
+                s_ultimo_sonido = ahora;
+                voice_talk_start();
+                s_scr = SCR_VOZ;
+                s_trans = 8;
+                s_cooldown_hasta = ahora + COOLDOWN_MS;   // bloquea un segundo toque inmediato
+            }
             break;
     }
     s_pulsado = -1;
 }
 
+// Banda superior de 'notifica': interrumpe 4 s sobre lo que se este viendo,
+// sin tocar la navegacion ni el resto del contenido (ver PROTOCOLO.md).
+static void banda_notifica(void)
+{
+    if (!voice_notifica_activa()) return;
+    const char *niv = voice_notifica_nivel();
+    uint16_t col = !strcmp(niv, "ok")    ? C_LIME
+                 : !strcmp(niv, "warn")  ? C_AMBER
+                 : !strcmp(niv, "error") ? C_BLOOD
+                 : C_CYAN;                              // "info" y por defecto
+    display_rect(0, 0, 240, 22, display_escala(col, 60));
+    display_rect(0, 20, 240, 2, col);
+    display_text_center(CX, 8, voice_notifica_txt(), C_WHITE, 1);
+}
+
 void hud_render(void)
 {
+    // La pregunta bloqueante sustituye TODA la pantalla: nada de marco, nada
+    // de navegacion. Se comprueba antes que cualquier otra cosa porque es
+    // literalmente el canal de aprobacion fisica del agente.
+    if (voice_pregunta_activa()) {
+        p_pregunta();
+        ui_ripple_dibuja();
+        display_flush();
+        s_t++;
+        return;
+    }
+
+    // Corte automatico por silencio: sin esto, si el toque de "soltar" no se
+    // registra en el tactil real o simplemente no queda claro que hay que
+    // soltar el dedo, el microfono se queda escuchando para siempre. Tras
+    // SILENCIO_MS sin nivel de voz, se corta solo -- igual que si se hubiera
+    // soltado el boton STOP a mano.
+    if (s_hablando) {
+        int64_t ahora = esp_timer_get_time() / 1000;
+        if (audio_mic_level() > SILENCIO_UMBRAL) s_ultimo_sonido = ahora;
+        if (ahora - s_ultimo_sonido > SILENCIO_MS) {
+            voice_talk_stop();
+            s_hablando = false;
+            s_pulsado = -1;
+            s_cooldown_hasta = ahora + COOLDOWN_MS;   // mismo margen que un stop manual
+        }
+    }
+
     marco();
-    switch (s_scr) {
+    if (es_vista_slot(s_scr)) {
+        p_vista(s_scr - SCR_VISTA0);
+    } else switch (s_scr) {
         case SCR_NUCLEO:   p_nucleo();   break;
         case SCR_RELOJ:    p_reloj();    break;
         case SCR_CLIMA:    p_clima();    break;
@@ -510,6 +756,7 @@ void hud_render(void)
     }
     if (ajustes()->scanlines) display_scanlines(14);
     if (ajustes()->rejilla) display_vineta();   // la vineta pasa a ser opcional
+    banda_notifica();     // por encima de todo, incluida la vineta
     display_flush();
     s_t++;
 }

@@ -59,37 +59,46 @@ en `boot.log`.
 
 ```bash
 cd servidor
-pip install -r requirements.txt
-export GROQ_API_KEY=gsk_...      # gratis en console.groq.com
+source ./activar.sh      # crea el venv la primera vez, luego solo lo activa
+python3 panel.py
+```
+
+`activar.sh` existe porque `python3` a secas puede resolver a otra cosa (por
+ejemplo el Python de PlatformIO, que trae su propio paquete `mcp` viejo e
+incompatible) según qué más tengas instalado en el Mac. El venv aísla esto.
+**Cada vez que abras una terminal nueva para tocar el servidor, primero
+`source ./activar.sh`.**
+
+Un solo menú para todo: pon ahí tu `GROQ_API_KEY` (gratis en console.groq.com,
+queda en `servidor/.env`, no se sube a git), activa las herramientas MCP que
+quieras y prueba que todo responde antes de arrancar el puente de verdad con
+
+```bash
 python3 websocket_bridge.py
 ```
 
 El ESP32 lo encuentra por mDNS, sin configurar direcciones IP.
 
-## Cambiar de proveedor de IA
-
-Se reordena una lista en `servidor/config.yaml`. Ni el firmware ni el agente
-se tocan, y si un proveedor falla en caliente la cadena pasa al siguiente:
-
-```yaml
-proveedores:
-  llm: [groq, nvidia, mlx]      # gratis · gratis · local sin red
-  stt: [groq, mlx-whisper]
-  tts: [macos]
-```
-
-Soportados: Groq, NVIDIA NIM, Cloudflare Workers AI, Azure OpenAI, Vertex AI,
-AWS Bedrock, Anthropic y modelos locales por MLX. Detalles en
-`servidor/PROVEEDORES.md`.
-
-## Gestionar herramientas MCP
+## Panel de control — claves, proveedores, MCP, todo en un sitio
 
 ```bash
-cd servidor && python3 mcps_cli.py
+cd servidor && python3 panel.py
 ```
 
-Menú con los 16 MCP del catálogo, su estado real y qué le falta a cada uno.
-Ver `servidor/MCP.md`.
+- **Claves de API**: se detectan solas leyendo qué variables usa cada
+  proveedor y cada MCP activo; se guardan en `servidor/.env` (con permisos
+  0600, fuera de git) en vez de tener que hacer `export` en cada terminal.
+- **Proveedores (LLM/STT/TTS)**: reordena la cadena de respaldo sin tocar
+  `config.yaml` a mano. Detalles del porqué de cada proveedor en
+  `servidor/PROVEEDORES.md`.
+- **Herramientas MCP**: el mismo gestor de siempre (`mcps_cli.py`), integrado
+  aquí — ver `servidor/MCP.md`.
+- **Probar todo**: arranca de verdad las cadenas de proveedores y los MCP
+  activos y dice qué quedó listo y qué falta, antes de gastar tiempo
+  flasheando o hablándole al HUD.
+
+`python3 panel.py --resumen` da el mismo diagnóstico sin menú, para pegarlo
+en un issue o revisar rápido si algo no arranca.
 
 ## Notas técnicas
 

@@ -167,7 +167,13 @@ void display_flush(void)
 {
     for (int y = 0; y < H; y += STRIP) {
         int lines = (y + STRIP > H) ? (H - y) : STRIP;
-        memcpy(s_strip, &s_fb[y * W], lines * W * sizeof(uint16_t));
+        // El framebuffer guarda RGB565 en el orden nativo del ESP32 (little
+        // endian) y el GC9A01 espera el byte alto primero. Con memcpy cada
+        // color llegaba con los bytes al reves: el cian se veia amarillo, el
+        // lima rojo y el gris magenta. bswap16 es una sola instruccion.
+        const uint16_t *src = &s_fb[y * W];
+        int n = lines * W;
+        for (int i = 0; i < n; i++) s_strip[i] = __builtin_bswap16(src[i]);
         esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip);
     }
 }

@@ -241,6 +241,12 @@ let s_scr=SCR.NUCLEO, s_state=ST.IDLE, s_t=0, s_trans=0, s_sel=0,
     s_pulsado=-1, s_hablando=false, s_t_down=0;
 let FIX=false;
 
+// ---- protocolo v2 simulado ----
+let VISTAS=[], PREG=null, NOTI=null;
+const COL={cyan:C_CYAN,magenta:C_MAGENTA,lime:C_LIME,amber:C_AMBER,
+           ice:C_ICE,blood:C_BLOOD,grey:C_GREY,white:C_WHITE};
+const totalPantallas=()=>SCR.TOTAL+VISTAS.length;
+
 const cut=(s,n)=>String(s).slice(0,n);
 const rep=(s,n)=>{let o="";while(o.length<n)o+=s;return o.slice(0,n);};
 const NEWS=["OPENAI PRESENTA UN MODELO DE RAZONAMIENTO MULTIMODAL",
@@ -322,12 +328,15 @@ function marco(){
   arc(CX,CY,117,1,0,359,escala(ac,60));
   const a0=s_t%360;
   arc(CX,CY,117,2,a0,a0+40,ac);
-  textC(CX,18,NOMBRES[s_scr],escala(ac,230),1);
+  textC(CX,18,s_scr<SCR.TOTAL?NOMBRES[s_scr]:(VISTAS[s_scr-SCR.TOTAL]||{}).titulo||"",escala(ac,230),1);
   fillCircle(CX-30,34,2,SIM.net?C_LIME:C_BLOOD);
   fillCircle(CX,   34,2,SIM.audio?C_LIME:C_BLOOD);
   fillCircle(CX+30,34,2,SIM.voice?C_LIME:C_BLOOD);
-  for(let i=0;i<SCR.TOTAL;i++){
-    const x=CX-45+i*10;
+  const n=totalPantallas();
+  let paso=n>1?Math.floor(110/(n-1)):0; if(paso>10)paso=10;
+  const x0=CX-paso*(n-1)/2;
+  for(let i=0;i<n;i++){
+    const x=x0+i*paso;
     if(i===s_scr)fillCircle(x,224,2,ac); else px(x,224,escala(ac,130));
   }
 }
@@ -446,6 +455,12 @@ function selDesdeY(y){
 
 function touchDown(x,y){
   s_t_down=performance.now();
+  if(PREG){
+    for(let i=0;i<PREG.opciones.length;i++){
+      if(dentro(pregBoton(i),x,y)){ s_pulsado=200+i; rippleLanza(x,y,pregBoton(i).color); return; }
+    }
+    s_pulsado=-1; return;
+  }
   const acc=botonAccion(), ac=acento();
   if(dentro(B_PREV,x,y)){ s_pulsado=BTN_PREV; rippleLanza(x,y,ac); }
   else if(dentro(B_NEXT,x,y)){ s_pulsado=BTN_NEXT; rippleLanza(x,y,ac); }
@@ -465,13 +480,20 @@ function touchHold(x,y){
   }
 }
 function touchUp(x,y){
+  if(PREG){
+    if(s_pulsado>=200&&dentro(pregBoton(s_pulsado-200),x,y)){
+      log(`respuesta: ${PREG.opciones[s_pulsado-200]}`); PREG=null;
+    }
+    s_pulsado=-1; return;
+  }
   if(s_hablando){ s_hablando=false; s_state=ST.IDLE; s_pulsado=-1; return; }
   if(FIX&&s_pulsado>=0){
     const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
     if(!dentro(b,x,y)){ s_pulsado=-1; return; }
   }
-  if(s_pulsado===BTN_PREV){ s_scr=(s_scr+SCR.TOTAL-1)%SCR.TOTAL; s_trans=8; }
-  else if(s_pulsado===BTN_NEXT){ s_scr=(s_scr+1)%SCR.TOTAL; s_trans=8; }
+  const N=totalPantallas();
+  if(s_pulsado===BTN_PREV){ s_scr=(s_scr+N-1)%N; s_trans=8; }
+  else if(s_pulsado===BTN_NEXT){ s_scr=(s_scr+1)%N; s_trans=8; }
   else if(s_pulsado===BTN_ACC){
     if(s_scr===SCR.AJUSTES){
       // FIX 3: el boton avanza la seleccion; toque largo incrementa
@@ -493,8 +515,53 @@ function incrementa(){
   sincronizaUI();
 }
 
+function pVista(v){
+  if(!v||!v.filas.length){ textC(CX,112,"SIN DATOS",C_GREY,1); return; }
+  let y=62;
+  for(const f of v.filas.slice(0,6)){
+    fillCircle(28,y+3,2,COL[v.acento]||C_CYAN);
+    text(38,y,cut(f.txt,anchoSeguro(y,38)),COL[f.color]||C_WHITE,1);
+    if(f.badge){ const bx=CX+62;
+      fillCircle(bx,y+3,6,escala(COL[v.acento]||C_CYAN,90));
+      textC(bx,y,f.badge,C_WHITE,1); }
+    y+=20;
+  }
+}
+function pregBoton(i){
+  const n=Math.max(1,PREG.opciones.length), hueco=8, total=190;
+  const w=Math.floor((total-(n-1)*hueco)/n);
+  return {x:CX-total/2+i*(w+hueco),y:150,w:w,h:48,
+          txt:PREG.opciones[i],color:i===0?C_LIME:C_BLOOD,escala_txt:1};
+}
+function pPregunta(){
+  clear(C_VOID);
+  const ac=acento();
+  arc(CX,CY,117,2,0,359,ac);
+  textC(CX,30,"CONFIRMAR",escala(C_AMBER,240),1);
+  let y=66,linea="";
+  for(const w of PREG.txt.split(" ")){
+    if((linea+" "+w).trim().length<=26){ linea=(linea+" "+w).trim(); }
+    else { if(y<140){textC(CX,y,linea,C_WHITE,1); y+=16;} linea=w; }
+  }
+  if(linea&&y<140)textC(CX,y,linea,C_WHITE,1);
+  const resta=Math.max(0,Math.ceil((PREG.vence-Date.now())/1000));
+  textC(CX,132,resta+"s",escala(C_GREY,200),1);
+  for(let i=0;i<PREG.opciones.length;i++) boton(pregBoton(i),s_pulsado===200+i);
+  rippleDibuja();
+  if(resta<=0){ PREG=null; }
+}
+function bandaNoti(){
+  if(!NOTI||Date.now()>NOTI.hasta){NOTI=null;return;}
+  const c=COL[NOTI.color]||C_CYAN;
+  rect(0,44,240,18,escala(c,40)); rect(0,44,240,1,c); rect(0,61,240,1,c);
+  textC(CX,48,NOTI.txt,C_WHITE,1);
+}
+
 function render(){
+  if(PREG){ pPregunta(); s_t++; return; }
+  if(s_scr>=totalPantallas()) s_scr=0;
   marco();
+  if(s_scr>=SCR.TOTAL){ pVista(VISTAS[s_scr-SCR.TOTAL]); bandaNoti(); dibujaBotones(); return; }
   switch(s_scr){
     case SCR.NUCLEO: pNucleo(); break;
     case SCR.RELOJ: pReloj(); break;
@@ -507,6 +574,10 @@ function render(){
     case SCR.AJUSTES: pAjustes(); break;
     default: pSistema();
   }
+  bandaNoti();
+  dibujaBotones();
+}
+function dibujaBotones(){
   boton(B_PREV,s_pulsado===BTN_PREV);
   boton(B_NEXT,s_pulsado===BTN_NEXT);
   const acc=botonAccion();

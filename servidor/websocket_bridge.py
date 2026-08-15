@@ -17,6 +17,7 @@ import websockets
 
 from nucleo import Agente, Config, MCPPool
 from nucleo.canal import CANAL
+from nucleo.guardia import GUARDIA, Rechazo
 from proveedores import cadenas_desde_config
 from noticias import titulares
 from telemetria import lineas_mac, lineas_creativo
@@ -174,6 +175,10 @@ async def atiende_control(ws):
     necesita los feeds periodicos.
     """
     log.info("cliente de control conectado desde %s", ws.remote_address)
+    # Un cliente de control recibe capacidades acotadas y caducas. Por defecto
+    # todas menos nada: el minimo se afina por cliente cuando haga falta.
+    sujeto = f"control:{ws.remote_address[1]}"
+    GUARDIA.concede(sujeto, segundos=3600)
     try:
         async for msg in ws:
             if isinstance(msg, bytes):
@@ -185,25 +190,35 @@ async def atiende_control(ws):
             try:
                 if not CANAL.vivo and fn != "estado":
                     v = {"error": "no hay ESP32 conectado al puente"}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+
+                # Frontera de confianza: valida, acota y sanea ANTES de que
+                # nada salga hacia el dispositivo. Lo que devuelve la guardia
+                # es lo unico que se usa; los args originales se descartan.
+                args = GUARDIA.revisa(sujeto, fn, args, CANAL.limites["ancho"])
+
+                if args.get("__dry_run__"):
+                    v = {"ok": True, "dry_run": True, "validado": args}
                 elif fn == "pregunta":
-                    v = await CANAL.pregunta(args.get("txt", ""),
-                                             args.get("opciones"),
-                                             int(args.get("timeout", 30)))
+                    v = await CANAL.pregunta(args["txt"], args["opciones"],
+                                             args["timeout"])
+                elif fn == "pregunta_async":
+                    v = await CANAL.pregunta_async(args["txt"], args["opciones"],
+                                                   args["timeout"])
+                elif fn == "consulta":
+                    v = CANAL.consulta(args["qid"])
                 elif fn == "mostrar":
-                    v = await CANAL.mostrar(args.get("id", "vista"),
-                                            args.get("titulo", ""),
-                                            args.get("filas") or [],
-                                            args.get("acento", "cyan"),
-                                            int(args.get("orden", 99)),
-                                            int(args.get("ttl", 0)))
+                    v = await CANAL.mostrar(args["id"], args["titulo"],
+                                            args["filas"], args["acento"],
+                                            args["orden"], args["ttl"])
                 elif fn == "borrar":
-                    v = await CANAL.borrar(args.get("id", ""))
+                    v = await CANAL.borrar(args["id"])
                 elif fn == "notifica":
-                    v = await CANAL.notifica(args.get("txt", ""),
-                                             args.get("nivel", "info"),
-                                             bool(args.get("beep")))
+                    v = await CANAL.notifica(args["txt"], args["nivel"],
+                                             args["beep"])
                 elif fn == "hablar":
-                    texto = args.get("texto", "")
+                    texto = args["texto"]
                     audio = await asyncio.to_thread(sintetiza, texto)
                     for i in range(0, len(audio), 2048):
                         await CANAL.ws.send(audio[i:i + 2048])
@@ -213,6 +228,11 @@ async def atiende_control(ws):
                     v = CANAL.snapshot()
                 else:
                     v = {"error": f"comando desconocido '{fn}'"}
+            except Rechazo as e:
+                # Rechazo es esperado, no un fallo: se devuelve al modelo con
+                # explicacion para que corrija en vez de reintentar a ciegas.
+                log.warning("RECHAZADO %s de %s: %s", fn, sujeto, e)
+                v = {"error": str(e), "rechazado_por": "guardia"}
             except Exception as e:
                 log.error("cmd %s fallo: %s", fn, e)
                 v = {"error": str(e)}
@@ -220,6 +240,8 @@ async def atiende_control(ws):
                                      ensure_ascii=False))
     except websockets.ConnectionClosed:
         log.info("cliente de control desconectado")
+    finally:
+        GUARDIA.revoca(sujeto)
 
 
 async def atiende(ws):

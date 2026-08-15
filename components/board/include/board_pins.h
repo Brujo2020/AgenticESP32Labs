@@ -14,7 +14,11 @@
 #define BOARD_LCD_BL        42      // OJO: logica invertida, 0 = encendido
 #define BOARD_LCD_H_RES     240
 #define BOARD_LCD_V_RES     240
-#define BOARD_LCD_SPI_HZ    (40 * 1000 * 1000)
+// 80 MHz: el GC9A01A lo aguanta y duplica el ancho de banda de volcado.
+// El framebuffer completo son 115 KB; a 40 MHz eso son ~23 ms solo de SPI,
+// que a 30 fps (33 ms de presupuesto) se comia el fotograma entero.
+// Si aparecieran artefactos en el panel, bajar a 40 MHz.
+#define BOARD_LCD_SPI_HZ    (80 * 1000 * 1000)
 
 // ---- Tactil CST816 (I2C bus 0) ----
 #define BOARD_TP_SDA        11

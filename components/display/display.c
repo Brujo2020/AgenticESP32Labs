@@ -5,6 +5,7 @@
 // ============================================================
 #include "display.h"
 #include "font5x7.h"
+#include "trig.h"
 #include "board_pins.h"
 #include <string.h>
 #include <math.h>
@@ -12,6 +13,9 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "esp_memory_utils.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
@@ -22,11 +26,23 @@
 #define W  BOARD_LCD_H_RES
 #define H  BOARD_LCD_V_RES
 #define STRIP 40
+#define N_STRIPS 2      // ping-pong: se copia uno mientras el otro va por DMA
 
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel = NULL;
 static uint16_t *s_fb = NULL;
-static uint16_t *s_strip = NULL;
+static uint16_t *s_strip[N_STRIPS] = {0};
+static SemaphoreHandle_t s_libre = NULL;    // transferencias DMA en vuelo
+
+// El driver avisa cuando termina de mandar un strip. Sin esto no se puede
+// saber cuando es seguro reutilizar el buffer y hay que ir en serie.
+static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *e, void *ctx)
+{
+    BaseType_t despertar = pdFALSE;
+    xSemaphoreGiveFromISR(s_libre, &despertar);
+    return despertar == pdTRUE;
+}
 
 esp_err_t display_init(void)
 {
@@ -51,9 +67,23 @@ esp_err_t display_init(void)
     ledc_channel_config(&ch);
     display_set_brightness(85);
 
-    s_fb    = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
-    s_strip = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
-    ESP_RETURN_ON_FALSE(s_fb && s_strip, ESP_ERR_NO_MEM, TAG, "sin memoria");
+    // El framebuffer son 115 KB: en RAM interna es un lujo que le quita
+    // sitio al pipeline de audio y a los buffers de vistas. Va a PSRAM.
+    // El strip DMA si tiene que ser interna: es lo que toca el periferico.
+    s_fb = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (!s_fb) {
+        ESP_LOGW(TAG, "sin PSRAM, el framebuffer cae a RAM interna");
+        s_fb = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+    }
+    for (int i = 0; i < N_STRIPS; i++) {
+        s_strip[i] = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
+        ESP_RETURN_ON_FALSE(s_strip[i], ESP_ERR_NO_MEM, TAG, "sin memoria DMA");
+    }
+    s_libre = xSemaphoreCreateCounting(N_STRIPS, N_STRIPS);
+    ESP_RETURN_ON_FALSE(s_fb && s_libre, ESP_ERR_NO_MEM, TAG, "sin memoria");
+    ESP_LOGI(TAG, "framebuffer %d KB en %s",
+             (int)(W * H * sizeof(uint16_t) / 1024),
+             esp_ptr_external_ram(s_fb) ? "PSRAM" : "RAM interna");
 
     spi_bus_config_t bus = {
         .sclk_io_num = BOARD_LCD_SCLK,
@@ -75,6 +105,7 @@ esp_err_t display_init(void)
         .spi_mode = 0,
         .trans_queue_depth = 10,
     };
+    io_cfg.on_color_trans_done = on_trans_done;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_cfg, &io), TAG, "panel io");
 
     esp_lcd_panel_dev_config_t pcfg = {
@@ -124,13 +155,16 @@ void display_fill_circle(int cx, int cy, int r, uint16_t c)
             if (dx*dx + dy*dy <= r*r) display_px(cx+dx, cy+dy, c);
 }
 
+// Sin coma flotante: la tabla Q15 sustituye cosf/sinf, que aqui se
+// llamaban una vez por grado y por fotograma.
 void display_arc(int cx, int cy, int r, int grosor, int a0, int a1, uint16_t c)
 {
     for (int a = a0; a <= a1; a++) {
-        float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
-        for (int t = 0; t < grosor; t++)
-            display_px(cx + (int)((r - t) * cs), cy + (int)((r - t) * sn), c);
+        int cs = trig_cos(a), sn = trig_sin(a);
+        for (int t = 0; t < grosor; t++) {
+            int rr = r - t;
+            display_px(cx + ((rr * cs) >> 15), cy + ((rr * sn) >> 15), c);
+        }
     }
 }
 
@@ -163,13 +197,23 @@ void display_text_center(int cx, int y, const char *s, uint16_t c, int e)
     display_text(cx - (int)strlen(s) * 3 * e, y, s, c, e);
 }
 
+// Volcado solapado. Antes esto era memcpy y draw_bitmap en serie: la SPI
+// quieta mientras se copiaba, y la CPU quieta mientras se transmitia. Con
+// dos buffers DMA se copia el strip siguiente mientras el anterior viaja,
+// asi que el coste pasa a ser el maximo de ambos en vez de la suma.
 void display_flush(void)
 {
+    int b = 0;
     for (int y = 0; y < H; y += STRIP) {
         int lines = (y + STRIP > H) ? (H - y) : STRIP;
-        memcpy(s_strip, &s_fb[y * W], lines * W * sizeof(uint16_t));
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip);
+        // Espera a que este buffer concreto haya terminado de transmitirse
+        xSemaphoreTake(s_libre, portMAX_DELAY);
+        memcpy(s_strip[b], &s_fb[y * W], lines * W * sizeof(uint16_t));
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip[b]);
+        b = (b + 1) % N_STRIPS;
     }
+    // No se espera al ultimo strip: el siguiente fotograma ya se bloqueara
+    // en el semaforo si hace falta. Adelantar trabajo es gratis.
 }
 
 
@@ -242,7 +286,7 @@ void display_arc_glow(int cx, int cy, int r, int grosor, int a0, int a1, uint16_
 {
     for (int a = a0; a <= a1; a++) {
         float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
+        int cs = trig_cos(a), sn = trig_sin(a);
         for (int t = -2; t < grosor + 2; t++) {
             int borde = (t < 0 || t >= grosor);
             int px = cx + (int)((r - t) * cs);
@@ -261,10 +305,11 @@ void display_arc_grad(int cx, int cy, int r, int grosor, int a0, int a1,
     for (int a = a0; a <= a1; a++) {
         uint8_t t = (uint8_t)((a - a0) * 255 / span);
         uint16_t c = display_mezcla(c0, c1, t);
-        float rad = a * (float)M_PI / 180.0f;
-        float cs = cosf(rad), sn = sinf(rad);
-        for (int k = 0; k < grosor; k++)
-            display_px(cx + (int)((r - k) * cs), cy + (int)((r - k) * sn), c);
+        int cs = trig_cos(a), sn = trig_sin(a);
+        for (int k = 0; k < grosor; k++) {
+            int rr = r - k;
+            display_px(cx + ((rr * cs) >> 15), cy + ((rr * sn) >> 15), c);
+        }
     }
 }
 
@@ -273,9 +318,11 @@ void display_ring_dots(int cx, int cy, int r, int n, int fase, uint16_t c)
 {
     for (int i = 0; i < n; i++) {
         float a = (fase + i * 360 / n) * (float)M_PI / 180.0f;
-        int x = cx + (int)(r * cosf(a));
-        int y = cy + (int)(r * sinf(a));
-        uint8_t brillo = 90 + (uint8_t)(120 * (0.5f + 0.5f * sinf((fase + i * 40) * 0.05f)));
+        int g = fase + i * 360 / n;
+        int x = cx + trig_mul_cos(r, g);
+        int y = cy + trig_mul_sin(r, g);
+        // Latido: 90..210 sin coma flotante
+        uint8_t brillo = (uint8_t)(150 + ((60 * trig_sin(fase * 3 + i * 40)) >> 15));
         display_fill_circle(x, y, 2, display_escala(c, brillo));
         display_px_glow(x + 1, y, c, 60);
         display_px_glow(x - 1, y, c, 60);
@@ -332,8 +379,8 @@ void display_corchetes(int r, uint16_t c)
         for (int d = -14; d <= 14; d++) {
             float a = (angs[i] + d) * (float)M_PI / 180.0f;
             for (int k = 0; k < 2; k++)
-                display_px(120 + (int)((r - k) * cosf(a)),
-                           120 + (int)((r - k) * sinf(a)), c);
+                display_px(120 + trig_mul_cos(r - k, a),
+                           120 + trig_mul_sin(r - k, a), c);
         }
     }
 }

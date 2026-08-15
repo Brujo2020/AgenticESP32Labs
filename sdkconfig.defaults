@@ -7,12 +7,32 @@ CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
-# PSRAM 8MB en modo QUAD (no octal: el forzado a octal tumbaba el boot)
-# PSRAM DESACTIVADA a proposito.
-# El framebuffer (240x240x2 = 115KB) cabe en la RAM interna del S3 (512KB),
-# y la init de PSRAM es lo mas fragil del arranque. Se reactiva mas adelante,
-# cuando haga falta para buffers de audio, y con el modo ya verificado.
-# CONFIG_SPIRAM=y
+# ---- PSRAM 8MB en modo QUAD ----
+# El modo ya estaba identificado en la nota anterior: lo que tumbaba el boot
+# era forzar OCTAL, no la PSRAM en si. Se activa en QUAD, que es lo que pide
+# este modulo. El framebuffer (115KB) se va aqui y libera RAM interna para
+# el pipeline de audio, los buffers de vistas y la pila de red.
+# Si el arranque se rompiera: comentar las cuatro lineas siguientes,
+# `idf.py fullclean && idf.py build flash`. display.c ya cae solo a RAM
+# interna con un aviso, asi que el codigo no necesita ningun cambio.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Solo lo grande va a PSRAM. Las reservas pequenas siguen en RAM interna,
+# que es mucho mas rapida: mandarlo todo fuera empeora en vez de mejorar.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# ---- Cache ----
+# Con el framebuffer en PSRAM la cache de datos pasa a ser el factor
+# dominante del render: cada pixel escrito la atraviesa. 64KB y linea de
+# 64B es la diferencia entre que la PSRAM sirva o estorbe.
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_64B=y
 
 # CPU a full
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
@@ -21,3 +41,19 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # USB nativo: consola por USB-CDC para ver logs sin adaptador serie
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# ---- Reparto de cores ----
+# WiFi y lwIP al core 0; el render se fija al core 1 desde main.c con
+# xTaskCreatePinnedToCore. Antes competian por el mismo core y entraba
+# tiron visible en la animacion cada vez que llegaba trafico.
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+
+# ---- Optimizar por velocidad ----
+# El render es el camino caliente y hay flash de sobra (16MB).
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+
+# NOTA sobre PSRAM: sigue desactivada, segun lo verificado en placa mas
+# arriba. display.c intenta MALLOC_CAP_SPIRAM y cae solo a RAM interna con
+# un aviso, asi que el dia que se active el framebuffer se mueve sin tocar
+# codigo. No se activa aqui a ciegas: el arranque ya se rompio una vez.

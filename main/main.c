@@ -25,6 +25,29 @@ static const char *TAG = "main";
 #define SERVIDOR_HOST  CONFIG_HUD_SERVER_HOST
 #define SERVIDOR_PORT  CONFIG_HUD_SERVER_PORT
 
+// Bucle de interfaz: lee el tactil, reenvia los eventos al HUD y dibuja.
+// Toque corto cambia de pantalla; mantenido mas de 250 ms es pulsar-para-hablar.
+static void tarea_hud(void *arg)
+{
+    bool tocado = false;
+    // vTaskDelayUntil mantiene cadencia fija: con vTaskDelay el periodo se
+    // desliza segun lo que tarde el fotograma y la animacion tiembla.
+    TickType_t last = xTaskGetTickCount();
+    while (1) {
+        int x = 0, y = 0;
+        bool ahora = touch_get(&x, &y);
+
+        // La logica de botones vive en el HUD; aqui solo se reenvian eventos
+        if (ahora && !tocado)      hud_touch_down(x, y);
+        else if (ahora)            hud_touch_hold(x, y);
+        else if (!ahora && tocado) hud_touch_up(x, y);
+        tocado = ahora;
+
+        hud_render();
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(33));      // ~30 FPS estables
+    }
+}
+
 // El clima se refresca en su propia tarea: la peticion HTTP bloquea
 // varios segundos y no debe congelar la animacion.
 static void tarea_clima(void *arg)
@@ -78,21 +101,11 @@ void app_main(void)
     hud_init();
     hud_set_state(ST_IDLE);
 
-    // Toque corto: cambia de pantalla.
-    // Toque mantenido (mas de 400 ms): pulsar para hablar.
-    bool tocado = false;
+    // El render va en su propia tarea fijada al core 1. En ESP-IDF la pila
+    // WiFi y lwIP viven en el core 0: dejarlos competir con el dibujado por
+    // el mismo core produce tirones visibles cuando entra trafico.
+    xTaskCreatePinnedToCore(tarea_hud, "hud", 4096, NULL, 5, NULL, 1);
 
-    while (1) {
-        int x = 0, y = 0;
-        bool ahora = touch_get(&x, &y);
-
-        // La logica de botones vive en el HUD; aqui solo se reenvian los eventos
-        if (ahora && !tocado)      hud_touch_down(x, y);
-        else if (ahora)            hud_touch_hold(x, y);
-        else if (!ahora && tocado) hud_touch_up(x, y);
-        tocado = ahora;
-
-        hud_render();
-        vTaskDelay(pdMS_TO_TICKS(33));      // ~30 FPS
-    }
+    // El hilo principal se queda solo vigilando el enlace, sin quemar CPU
+    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }

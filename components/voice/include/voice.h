@@ -1,4 +1,7 @@
 #pragma once
+
+// Version de firmware que se anuncia en el handshake del protocolo v2
+#define VOZ_FW "0.4.0"
 #include <stdbool.h>
 #include "esp_err.h"
 

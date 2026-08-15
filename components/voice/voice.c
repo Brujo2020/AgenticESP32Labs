@@ -7,6 +7,7 @@
 #include "voice.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "vistas.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -69,12 +70,33 @@ static void aplica_estado(const char *v)
 
 voice_state_t voice_state(void) { return s_state; }
 
+// Enviar texto crudo por el socket. Es lo que 'vistas' necesita para
+// contestar preguntas y emitir eventos sin conocer el WebSocket.
+static void emite(const char *json)
+{
+    if (s_ws && s_conn)
+        esp_websocket_client_send_text(s_ws, json, strlen(json), portMAX_DELAY);
+}
+
+// Handshake: el servidor necesita saber los limites REALES de los buffers
+// estaticos del firmware. Si no los anuncia, el servidor asume los suyos y
+// acabamos truncando en el sitio equivocado.
+static void saluda(void)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "{\"t\":\"hola\",\"fw\":\"%s\",\"vistas_max\":%d,"
+             "\"filas_max\":%d,\"ancho\":%d}",
+             VOZ_FW, VISTA_MAX, VISTA_FILAS, VISTA_ANCHO - 1);
+    emite(buf);
+}
+
 static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     esp_websocket_event_data_t *e = (esp_websocket_event_data_t *)data;
     switch (id) {
     case WEBSOCKET_EVENT_CONNECTED:
-        s_conn = true;  ESP_LOGI(TAG, "conectado");  break;
+        s_conn = true;  ESP_LOGI(TAG, "conectado");  saluda();  break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_conn = false; ESP_LOGW(TAG, "desconectado"); break;
     case WEBSOCKET_EVENT_DATA:
@@ -85,6 +107,14 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
             if (j) {
                 cJSON *t = cJSON_GetObjectItem(j, "t");
                 cJSON *v = cJSON_GetObjectItem(j, "v");
+
+                // Protocolo v2: vistas declarativas, preguntas y avisos.
+                // Se consulta antes que el v1 porque estos mensajes no
+                // tienen campo "v" y no encajan en el switch de abajo.
+                if (cJSON_IsString(t) && vistas_maneja(t->valuestring, j)) {
+                    cJSON_Delete(j);
+                    break;
+                }
                 if (cJSON_IsString(t) && cJSON_IsString(v)) {
                     const char *tipo = t->valuestring;
                     if (!strcmp(tipo, "estado")) {
@@ -146,6 +176,8 @@ esp_err_t voice_init(const char *host, int port)
     s_ws = esp_websocket_client_init(&cfg);
     if (!s_ws) return ESP_FAIL;
     esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, on_ws, NULL);
+    vistas_init();
+    vistas_set_emisor(emite);
     esp_err_t r = esp_websocket_client_start(s_ws);
     xTaskCreate(tarea_mic, "mic_ws", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "puente en %s", uri);

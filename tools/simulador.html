@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Simulador HUD — Spotpear ESP32-S3-1.28-BOX (GC9A01A 240x240)</title>
+<style>
+  :root{
+    --bg:#0b0e13; --panel:#141922; --line:#232b38; --txt:#c8d4e4; --dim:#6b7a90;
+    --accent:#07c8ff; --warn:#ff9d2e; --bad:#ff4d5e; --good:#4dff9d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+       display:flex;gap:22px;padding:22px;align-items:flex-start;flex-wrap:wrap}
+  h1{font-size:15px;margin:0 0 4px;letter-spacing:.5px}
+  .sub{color:var(--dim);font-size:11px;margin-bottom:14px}
+  .stage{display:flex;flex-direction:column;align-items:center;gap:12px}
+  .bezel{width:496px;height:496px;border-radius:50%;
+         background:radial-gradient(circle at 30% 25%,#2c3442,#0d1117 70%);
+         padding:8px;box-shadow:0 0 0 2px #333d4d,0 18px 50px #000a,inset 0 0 20px #0008;
+         position:relative}
+  canvas{width:480px;height:480px;border-radius:50%;display:block;
+         image-rendering:pixelated;background:#000;cursor:crosshair;touch-action:none}
+  #overlay{position:absolute;left:8px;top:8px;width:480px;height:480px;
+           border-radius:50%;pointer-events:none}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+         padding:14px;min-width:280px;max-width:340px}
+  .panel h2{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;
+            color:var(--dim);margin:0 0 10px;font-weight:600}
+  .panel+.panel{margin-top:14px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  button{background:#1d2531;color:var(--txt);border:1px solid var(--line);
+         border-radius:6px;padding:7px 8px;cursor:pointer;font:inherit;font-size:11px;
+         transition:.12s}
+  button:hover{background:#28323f;border-color:#3a465a}
+  button.on{background:var(--accent);color:#04121a;border-color:var(--accent);font-weight:700}
+  label{display:flex;align-items:center;gap:8px;margin:7px 0;font-size:12px;cursor:pointer}
+  input[type=range]{flex:1;accent-color:var(--accent)}
+  input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+  .val{color:var(--accent);min-width:34px;text-align:right;font-variant-numeric:tabular-nums}
+  .bugs{list-style:none;padding:0;margin:0;font-size:11.5px}
+  .bugs li{padding:7px 0 7px 20px;border-bottom:1px solid var(--line);position:relative}
+  .bugs li:last-child{border:0}
+  .bugs li::before{content:"▸";position:absolute;left:4px;color:var(--bad)}
+  .bugs li.fixed::before{content:"✓";color:var(--good)}
+  .bugs b{color:#fff;font-weight:600}
+  .hint{color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5}
+  .readout{display:flex;gap:14px;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .readout b{color:var(--accent);font-weight:600}
+  .tag{display:inline-block;font-size:9.5px;padding:1px 6px;border-radius:99px;
+       background:#26303e;color:var(--dim);margin-left:6px;vertical-align:middle}
+  .tag.bad{background:#3a1b22;color:#ff8590}
+  .tag.good{background:#12321f;color:#5dffa8}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div>
+    <h1>HUD · Spotpear ESP32-S3-1.28-BOX</h1>
+    <div class="sub">GC9A01A 240×240 redonda · puerto fiel de display.c + hud.c · 30 fps</div>
+  </div>
+  <div class="bezel">
+    <canvas id="lcd" width="240" height="240"></canvas>
+    <svg id="overlay" viewBox="0 0 240 240"></svg>
+  </div>
+  <div class="readout">
+    <span>toque <b id="rxy">—</b></span>
+    <span>pantalla <b id="rscr">NUCLEO</b></span>
+    <span>frame <b id="rt">0</b></span>
+    <span>sel <b id="rsel">0</b></span>
+  </div>
+</div>
+
+<div>
+  <div class="panel">
+    <h2>Pantalla</h2>
+    <div class="grid" id="screens"></div>
+    <div class="hint">Arrastra sobre el LCD para tocar. Mantén el botón VOZ &gt;250 ms para hablar.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Diagnóstico visual</h2>
+    <label><input type="checkbox" id="ovSafe"> Área visible del círculo <span class="tag">r=118</span></label>
+    <label><input type="checkbox" id="ovTouch"> Zonas táctiles reales</label>
+    <label><input type="checkbox" id="ovRows"> Filas de AJUSTES vs bandas</label>
+    <label><input type="checkbox" id="fix"> <b>Aplicar correcciones</b> <span class="tag good">7 bugs</span></label>
+  </div>
+
+  <div class="panel">
+    <h2>Bugs detectados</h2>
+    <ul class="bugs" id="buglist">
+      <li data-b="1"><b>AJUSTES desalineado.</b> Bandas y&lt;112/145/168/192 vs filas 62/90/122/142/160. De TEMA abajo selecciona la fila anterior; REJILLA inalcanzable.</li>
+      <li data-b="2"><b>Sin clipping circular.</b> lista() y p_chat() pintan desde x=38 sin truncar: 33 chars llegan a x=236, fuera del círculo.</li>
+      <li data-b="3"><b>hud_ajuste_siguiente() muerta.</b> Exportada, nunca invocada.</li>
+      <li data-b="4"><b>Cursor &gt; desfasado.</b> marcas[]={66,94,…} vs etiquetas en 62,90.</li>
+      <li data-b="5"><b>Sin cancelar toque.</b> hud_touch_up ignora (x,y): arrastrar fuera igual activa.</li>
+      <li data-b="6"><b>Atajo sin transición.</b> s_scr=SCR_VOZ no pone s_trans.</li>
+      <li data-b="7"><b>Botón VOZ roza los puntos.</b> Botón acaba en y=222, indicadores en y=224.</li>
+    </ul>
+  </div>
+</div>
+
+<div>
+  <div class="panel">
+    <h2>Ajustes del dispositivo</h2>
+    <label>Brillo <input type="range" id="sBri" min="0" max="100" value="85"><span class="val" id="vBri">85</span></label>
+    <label>Volumen <input type="range" id="sVol" min="0" max="100" value="55"><span class="val" id="vVol">55</span></label>
+    <label>Tema
+      <select id="sTema" style="flex:1;background:#1d2531;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px">
+        <option value="0">CIAN</option><option value="1">MAGENTA</option>
+        <option value="2">LIMA</option><option value="3">AMBAR</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="cScan"> Scanlines</label>
+    <label><input type="checkbox" id="cGrid"> Viñeta</label>
+  </div>
+
+  <div class="panel">
+    <h2>Estado simulado</h2>
+    <label><input type="checkbox" id="cNet" checked> WiFi conectado</label>
+    <label><input type="checkbox" id="cAudio" checked> Audio listo</label>
+    <label><input type="checkbox" id="cVoice" checked> Servidor de voz</label>
+    <label><input type="checkbox" id="cHora" checked> Hora válida (SNTP)</label>
+    <label><input type="checkbox" id="cClima" checked> Clima válido</label>
+    <label>Nivel mic <input type="range" id="sMic" min="0" max="100" value="0"><span class="val" id="vMic">0</span></label>
+    <label><input type="checkbox" id="cMicAuto" checked> Mic reactivo</label>
+  </div>
+
+  <div class="panel">
+    <h2>Datos del servidor</h2>
+    <label>Longitud de línea <input type="range" id="sLen" min="8" max="40" value="33"><span class="val" id="vLen">33</span></label>
+    <div class="hint">Sube a 33+ y mira cómo NOTICIAS, MAQUINA y REGISTRO se salen del círculo. Es <code>VOZ_ANCHO</code>.</div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  Puerto de components/display/display.c
+// ════════════════════════════════════════════════════════════
+const W=240,H=240,CX=120,CY=120;
+const fb=new Uint16Array(W*H);
+
+const C_VOID=0x0000,C_DEEP=0x0861,C_CYAN=0x07FF,C_MAGENTA=0xF81F,
+      C_LIME=0x87E0,C_AMBER=0xFD20,C_ICE=0xAEDF,C_BLOOD=0xF8A0,
+      C_WHITE=0xFFFF,C_GREY=0x52AA;
+
+const font5x7=[
+[0x00,0x00,0x00,0x00,0x00],[0x00,0x00,0x5F,0x00,0x00],[0x00,0x07,0x00,0x07,0x00],
+[0x14,0x7F,0x14,0x7F,0x14],[0x24,0x2A,0x7F,0x2A,0x12],[0x23,0x13,0x08,0x64,0x62],
+[0x36,0x49,0x55,0x22,0x50],[0x00,0x05,0x03,0x00,0x00],[0x00,0x1C,0x22,0x41,0x00],
+[0x00,0x41,0x22,0x1C,0x00],[0x14,0x08,0x3E,0x08,0x14],[0x08,0x08,0x3E,0x08,0x08],
+[0x00,0x50,0x30,0x00,0x00],[0x08,0x08,0x08,0x08,0x08],[0x00,0x60,0x60,0x00,0x00],
+[0x20,0x10,0x08,0x04,0x02],[0x3E,0x51,0x49,0x45,0x3E],[0x00,0x42,0x7F,0x40,0x00],
+[0x42,0x61,0x51,0x49,0x46],[0x21,0x41,0x45,0x4B,0x31],[0x18,0x14,0x12,0x7F,0x10],
+[0x27,0x45,0x45,0x45,0x39],[0x3C,0x4A,0x49,0x49,0x30],[0x01,0x71,0x09,0x05,0x03],
+[0x36,0x49,0x49,0x49,0x36],[0x06,0x49,0x49,0x29,0x1E],[0x00,0x36,0x36,0x00,0x00],
+[0x00,0x56,0x36,0x00,0x00],[0x08,0x14,0x22,0x41,0x00],[0x14,0x14,0x14,0x14,0x14],
+[0x00,0x41,0x22,0x14,0x08],[0x02,0x01,0x51,0x09,0x06],[0x32,0x49,0x79,0x41,0x3E],
+[0x7E,0x11,0x11,0x11,0x7E],[0x7F,0x49,0x49,0x49,0x36],[0x3E,0x41,0x41,0x41,0x22],
+[0x7F,0x41,0x41,0x22,0x1C],[0x7F,0x49,0x49,0x49,0x41],[0x7F,0x09,0x09,0x09,0x01],
+[0x3E,0x41,0x49,0x49,0x7A],[0x7F,0x08,0x08,0x08,0x7F],[0x00,0x41,0x7F,0x41,0x00],
+[0x20,0x40,0x41,0x3F,0x01],[0x7F,0x08,0x14,0x22,0x41],[0x7F,0x40,0x40,0x40,0x40],
+[0x7F,0x02,0x0C,0x02,0x7F],[0x7F,0x04,0x08,0x10,0x7F],[0x3E,0x41,0x41,0x41,0x3E],
+[0x7F,0x09,0x09,0x09,0x06],[0x3E,0x41,0x51,0x21,0x5E],[0x7F,0x09,0x19,0x29,0x46],
+[0x46,0x49,0x49,0x49,0x31],[0x01,0x01,0x7F,0x01,0x01],[0x3F,0x40,0x40,0x40,0x3F],
+[0x1F,0x20,0x40,0x20,0x1F],[0x3F,0x40,0x38,0x40,0x3F],[0x63,0x14,0x08,0x14,0x63],
+[0x07,0x08,0x70,0x08,0x07],[0x61,0x51,0x49,0x45,0x43]];
+
+const px=(x,y,c)=>{ x|=0;y|=0; if(x<0||y<0||x>=W||y>=H)return; fb[y*W+x]=c; };
+const clear=c=>fb.fill(c);
+function escala(c,f){
+  const r=((c>>11)&0x1F)*f/255|0, g=((c>>5)&0x3F)*f/255|0, b=(c&0x1F)*f/255|0;
+  return (r<<11)|(g<<5)|b;
+}
+function mezcla(a,b,t){
+  const ra=(a>>11)&0x1F,ga=(a>>5)&0x3F,ba=a&0x1F;
+  const rb=(b>>11)&0x1F,gb=(b>>5)&0x3F,bb=b&0x1F;
+  return ((((ra*(255-t)+rb*t)/255)|0)<<11)|((((ga*(255-t)+gb*t)/255)|0)<<5)|(((ba*(255-t)+bb*t)/255)|0);
+}
+function pxGlow(x,y,c,a){ x|=0;y|=0; if(x<0||y<0||x>=W||y>=H)return;
+  fb[y*W+x]=mezcla(fb[y*W+x],c,a); }
+function circle(cx,cy,r,c){
+  let x=r,y=0,err=1-x;
+  while(x>=y){
+    px(cx+x,cy+y,c);px(cx+y,cy+x,c);px(cx-y,cy+x,c);px(cx-x,cy+y,c);
+    px(cx-x,cy-y,c);px(cx-y,cy-x,c);px(cx+y,cy-x,c);px(cx+x,cy-y,c);
+    y++; if(err<0)err+=2*y+1; else {x--;err+=2*(y-x)+1;}
+  }
+}
+function fillCircle(cx,cy,r,c){
+  for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++)
+    if(dx*dx+dy*dy<=r*r)px(cx+dx,cy+dy,c);
+}
+function arc(cx,cy,r,g,a0,a1,c){
+  for(let a=a0;a<=a1;a++){
+    const rad=a*Math.PI/180, cs=Math.cos(rad), sn=Math.sin(rad);
+    for(let t=0;t<g;t++)px(cx+((r-t)*cs|0),cy+((r-t)*sn|0),c);
+  }
+}
+function rect(x,y,w,h,c){ for(let j=0;j<h;j++)for(let i=0;i<w;i++)px(x+i,y+j,c); }
+function line(x0,y0,x1,y1,c){
+  let dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1,err=dx+dy;
+  for(;;){ px(x0,y0,c); if(x0===x1&&y0===y1)break;
+    const e2=2*err; if(e2>=dy){err+=dy;x0+=sx;} if(e2<=dx){err+=dx;y0+=sy;} }
+}
+function drawChar(x,y,ch,c,e){
+  let n=ch.charCodeAt(0);
+  if(n>=97&&n<=122)n-=32;
+  if(n<32||n>90)return;
+  const g=font5x7[n-32];
+  for(let col=0;col<5;col++)for(let row=0;row<7;row++)
+    if(g[col]&(1<<row))for(let sy=0;sy<e;sy++)for(let sx=0;sx<e;sx++)
+      px(x+col*e+sx,y+row*e+sy,c);
+}
+function text(x,y,s,c,e){ s=String(s); for(const ch of s){drawChar(x,y,ch,c,e);x+=6*e;} }
+function textC(cx,y,s,c,e){ s=String(s); text(cx-s.length*3*e,y,s,c,e); }
+function scanlines(i){ for(let y=0;y<H;y+=3)for(let x=0;x<W;x++)
+  fb[y*W+x]=escala(fb[y*W+x],255-i); }
+function vineta(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const dx=x-120,dy=y-120,d2=dx*dx+dy*dy;
+    if(d2>8100){ const d=Math.sqrt(d2)|0; let f=255-((d-90)*255/40)|0;
+      if(f<0)f=0; fb[y*W+x]=escala(fb[y*W+x],f); }
+  }
+}
+function fade(f){ for(let i=0;i<W*H;i++)fb[i]=escala(fb[i],f); }
+
+// ════════════════════════════════════════════════════════════
+//  Estado (ajustes.c + net.c + voice.c + audio.c simulados)
+// ════════════════════════════════════════════════════════════
+const A={brillo:85,volumen:55,tema:0,scanlines:false,rejilla:false};
+const acento=()=>[C_CYAN,C_MAGENTA,C_LIME,C_AMBER][A.tema];
+const SIM={net:true,audio:true,voice:true,hora:true,clima:true,mic:0,micAuto:true,len:33};
+
+const SCR={NUCLEO:0,RELOJ:1,CLIMA:2,VOZ:3,CHAT:4,NOTICIAS:5,MAC:6,CREATIVO:7,AJUSTES:8,SISTEMA:9,TOTAL:10};
+const NOMBRES=["NUCLEO","CRONO","ATMOS","VOZ","REGISTRO","SENALES","MAQUINA","FORJA","AJUSTES","DIAG"];
+const ST={IDLE:0,LISTENING:1,PROCESSING:2,SPEAKING:3,ERROR:4};
+
+let s_scr=SCR.NUCLEO, s_state=ST.IDLE, s_t=0, s_trans=0, s_sel=0,
+    s_pulsado=-1, s_hablando=false, s_t_down=0;
+let FIX=false;
+
+// ---- protocolo v2 simulado ----
+let VISTAS=[], PREG=null, NOTI=null;
+const COL={cyan:C_CYAN,magenta:C_MAGENTA,lime:C_LIME,amber:C_AMBER,
+           ice:C_ICE,blood:C_BLOOD,grey:C_GREY,white:C_WHITE};
+const totalPantallas=()=>SCR.TOTAL+VISTAS.length;
+
+const cut=(s,n)=>String(s).slice(0,n);
+const rep=(s,n)=>{let o="";while(o.length<n)o+=s;return o.slice(0,n);};
+const NEWS=["OPENAI PRESENTA UN MODELO DE RAZONAMIENTO MULTIMODAL",
+            "ANDROID XR SUMA CINCO DISPOSITIVOS ESTE ANO",
+            "SAMSUNG GALAXY XR BAJA DE PRECIO EN LATAM",
+            "META SALE DEL MERCADO ENTERPRISE DE QUEST",
+            "UNITY 6.3 LLEGA CON POLYSPATIAL ESTABLE"];
+const MACL=["CPU 34% GPU 12%","RAM 18.2/32 GB","BATERIA 87% CARGANDO",
+            "BLENDER 41% CPU","CODE 8% CPU","DISCO 412 GB LIBRE"];
+const CREL=["BLENDER ACTIVO 41% CPU","UNITY ACTIVO 12% CPU","ESP32-HUD-IDF","GRUA-PORTUARIA.BLEND"];
+const CHAT=[["QUE TAL VA EL BUILD DE UNITY",true],["EL BUILD TERMINO EN 4 MINUTOS",false],
+            ["Y CUANTOS ERRORES",true],["NINGUNO. TRES AVISOS DE SHADER",false]];
+
+const news=()=>NEWS.map(s=>cut(s,SIM.len));
+const macl=()=>MACL.map(s=>cut(s,SIM.len));
+const crel=()=>CREL.map(s=>cut(s,SIM.len));
+
+// ════════════════════════════════════════════════════════════
+//  Puerto de components/hud/ui.c
+// ════════════════════════════════════════════════════════════
+let rx=0,ry=0,rt=-1,rc=0;
+const rippleLanza=(x,y,c)=>{rx=x;ry=y;rc=c;rt=0;};
+function rippleDibuja(){
+  if(rt<0)return;
+  const r=4+rt*5; let alpha=140-rt*20; if(alpha<0)alpha=0;
+  for(let a=0;a<360;a+=4){
+    const rad=a*Math.PI/180;
+    pxGlow(rx+(r*Math.cos(rad)|0),ry+(r*Math.sin(rad)|0),rc,alpha);
+  }
+  if(++rt>6)rt=-1;
+}
+function dentro(b,x,y){
+  const m=14;
+  if(b.redondo){
+    const cx=b.x+b.w/2,cy=b.y+b.h/2,dx=x-cx,dy=y-cy,r=b.w/2+m;
+    return dx*dx+dy*dy<=r*r;
+  }
+  return x>=b.x-m&&x<=b.x+b.w+m&&y>=b.y-m&&y<=b.y+b.h+m;
+}
+function boton(b,activo){
+  const relleno=escala(b.color,activo?150:45), borde=activo?C_WHITE:b.color;
+  const e=b.escala_txt||2;
+  if(b.redondo){
+    const cx=b.x+b.w/2|0,cy=b.y+b.h/2|0,r=b.w/2|0;
+    fillCircle(cx,cy,r,relleno); arc(cx,cy,r,2,0,359,borde);
+    if(b.txt)textC(cx,cy-(FIX?3.5*e|0:3*e),b.txt,C_WHITE,e);
+  }else{
+    rect(b.x,b.y,b.w,b.h,relleno);
+    rect(b.x,b.y,b.w,2,borde); rect(b.x,b.y+b.h-2,b.w,2,borde);
+    rect(b.x,b.y,2,b.h,borde); rect(b.x+b.w-2,b.y,2,b.h,borde);
+    if(b.txt)textC(b.x+b.w/2|0,b.y+b.h/2-(FIX?3.5*e|0:3*e),b.txt,C_WHITE,e);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  Puerto de components/hud/hud.c
+// ════════════════════════════════════════════════════════════
+const B_PREV={x:8,y:96,w:26,h:48,txt:"<",color:C_GREY,escala_txt:1};
+const B_NEXT={x:206,y:96,w:26,h:48,txt:">",color:C_GREY,escala_txt:1};
+const BTN_PREV=100,BTN_NEXT=101,BTN_ACC=102;
+
+function botonAccion(){
+  const ac=acento();
+  if(s_scr===SCR.AJUSTES)
+    return {x:96,y:182,w:48,h:26,txt:"MAS",color:ac,escala_txt:1};
+  // FIX 7: sube el boton 4px para no rozar los puntos de y=224
+  const y=FIX?176:182;
+  return {x:100,y:y,w:40,h:40,redondo:true,
+          txt:s_hablando?"..":"VOZ",color:s_hablando?C_LIME:ac,escala_txt:1};
+}
+
+function colorEstado(){
+  return [C_GREY,C_CYAN,C_AMBER,C_LIME,C_BLOOD][s_state];
+}
+
+function marco(){
+  const ac=acento();
+  clear(C_VOID);
+  arc(CX,CY,117,1,0,359,escala(ac,60));
+  const a0=s_t%360;
+  arc(CX,CY,117,2,a0,a0+40,ac);
+  textC(CX,18,s_scr<SCR.TOTAL?NOMBRES[s_scr]:(VISTAS[s_scr-SCR.TOTAL]||{}).titulo||"",escala(ac,230),1);
+  fillCircle(CX-30,34,2,SIM.net?C_LIME:C_BLOOD);
+  fillCircle(CX,   34,2,SIM.audio?C_LIME:C_BLOOD);
+  fillCircle(CX+30,34,2,SIM.voice?C_LIME:C_BLOOD);
+  const n=totalPantallas();
+  let paso=n>1?Math.floor(110/(n-1)):0; if(paso>10)paso=10;
+  const x0=CX-paso*(n-1)/2;
+  for(let i=0;i<n;i++){
+    const x=x0+i*paso;
+    if(i===s_scr)fillCircle(x,224,2,ac); else px(x,224,escala(ac,130));
+  }
+}
+
+// --- ancho maximo de texto dentro del circulo a una altura y ---
+function anchoSeguro(y,x0){
+  const dy=y+3-CY;                    // centro vertical del glifo
+  const semi=Math.sqrt(Math.max(0,118*118-dy*dy));
+  return Math.max(0,((CX+semi)-x0)/6|0);
+}
+
+function pNucleo(){
+  const ac=acento(), lvl=SIM.mic, r=30+(lvl/6|0);
+  arc(CX,CY-10,r,1,0,359,escala(ac,200));
+  textC(CX,CY-24,"MARIO",C_WHITE,2);
+  textC(CX,CY-4,"ESP32",escala(ac,220),1);
+  textC(CX,176,SIM.net?"EN LINEA":"SIN RED",SIM.net?C_LIME:C_BLOOD,1);
+}
+function pReloj(){
+  const ac=acento(), d=new Date();
+  if(!SIM.hora){ textC(CX,112,"SIN HORA",C_GREY,1); return; }
+  arc(CX,CY,104,2,-90,-90+d.getSeconds()*6,ac);
+  const p=n=>String(n).padStart(2,"0");
+  textC(CX,96,`${p(d.getHours())}:${p(d.getMinutes())}`,C_WHITE,4);
+  textC(CX,132,p(d.getSeconds()),escala(C_MAGENTA,220),1);
+  const dias=["DOM","LUN","MAR","MIE","JUE","VIE","SAB"];
+  textC(CX,154,`${dias[d.getDay()]} ${p(d.getDate())}/${p(d.getMonth()+1)}`,escala(ac,200),1);
+}
+function pClima(){
+  if(!SIM.clima){ textC(CX,112,"SIN DATOS",C_GREY,1); return; }
+  const temp=21, pct=temp*100/40|0;
+  arc(CX,CY,104,2,150,150+pct*24/10|0,C_AMBER);
+  textC(CX,96,temp+"C",C_WHITE,4);
+  textC(CX,138,"DESPEJADO",C_ICE,1);
+  textC(CX,158,"12 KMH",escala(C_ICE,190),1);
+}
+function pVoz(){
+  const col=colorEstado(), lvl=SIM.mic;
+  const txt=["EN ESPERA","ESCUCHANDO","PROCESANDO","RESPONDIENDO","ERROR"][s_state];
+  for(let i=0;i<16;i++){
+    const a=i*22.5*Math.PI/180;
+    let alto=5+(lvl*5/30|0); if(alto>18)alto=18;
+    for(let k=0;k<alto;k++){
+      const r=84+k;
+      px(CX+(r*Math.cos(a)|0),CY+(r*Math.sin(a)|0),col);
+    }
+  }
+  textC(CX,104,txt,col,1);
+  textC(CX,126,SIM.voice?"MANTEN PARA HABLAR":"SIN SERVIDOR",SIM.voice?C_GREY:C_BLOOD,1);
+}
+function lista(arr,col,vacio){
+  if(!arr.length){ textC(CX,112,vacio,C_GREY,1); return; }
+  let y=62;
+  for(let i=0;i<arr.length&&i<6;i++,y+=20){
+    fillCircle(28,y+3,2,col);
+    const s=FIX?cut(arr[i],anchoSeguro(y,38)):arr[i];
+    text(38,y,s,C_WHITE,1);
+  }
+}
+function pChat(){
+  let y=62;
+  for(const [t,mio] of CHAT){
+    text(26,y,mio?">":"<",mio?C_CYAN:C_LIME,1);
+    const s=FIX?cut(t,anchoSeguro(y,38)):cut(t,SIM.len);
+    text(38,y,s,mio?C_WHITE:C_LIME,1);
+    y+=20;
+  }
+}
+function barra(y,etiqueta,pct,col,sel){
+  const bw=104,bx=CX-bw/2;
+  text(bx,y-12,etiqueta,sel?C_WHITE:escala(col,160),1);
+  text(bx+bw-18,y-12,String(pct),sel?C_WHITE:C_GREY,1);
+  rect(bx,y,bw,5,0x2124);
+  rect(bx,y,bw*pct/100|0,5,col);
+  if(sel){ rect(bx-3,y-2,1,9,C_WHITE); rect(bx+bw+2,y-2,1,9,C_WHITE); }
+}
+function conmutador(y,etiqueta,on,sel){
+  const bx=CX-52;
+  text(bx,y,etiqueta,sel?C_WHITE:C_GREY,1);
+  const c=on?C_LIME:C_GREY;
+  rect(bx+74,y+1,20,7,escala(c,90));
+  fillCircle(bx+(on?89:79),y+4,3,c);
+}
+const TEMAS=["CIAN","MAGENTA","LIMA","AMBAR"];
+function pAjustes(){
+  const ac=acento(), bx=CX-52;
+  barra(74,"BRILLO",A.brillo,ac,s_sel===0);
+  barra(102,"VOLUMEN",A.volumen,ac,s_sel===1);
+  text(bx,122,"TEMA",s_sel===2?C_WHITE:C_GREY,1);
+  text(bx+74,122,TEMAS[A.tema],ac,1);
+  conmutador(142,"LINEAS",A.scanlines,s_sel===3);
+  conmutador(160,"REJILLA",A.rejilla,s_sel===4);
+  // FIX 4: alinear el cursor con las etiquetas reales
+  const marcas=FIX?[62,90,122,142,160]:[66,94,122,142,160];
+  text(bx-12,marcas[s_sel],">",C_WHITE,1);
+}
+function pSistema(){
+  const ac=acento(); let y=66;
+  text(52,y,"IP",C_GREY,1); text(86,y,SIM.net?"192.168.1.42":"0.0.0.0",ac,1); y+=20;
+  text(52,y,"RF",C_GREY,1); text(86,y,SIM.net?"-52 DBM":"NO",SIM.net?C_LIME:C_BLOOD,1); y+=20;
+  text(52,y,"RAM",C_GREY,1); text(86,y,"118 KB",C_AMBER,1); y+=20;
+  const s=Math.floor(s_t/30), p=n=>String(n).padStart(2,"0");
+  text(52,y,"ON",C_GREY,1);
+  text(86,y,`${p(s/3600|0)}:${p((s/60|0)%60)}:${p(s%60)}`,C_MAGENTA,1); y+=24;
+  textC(CX,y,SIM.audio?"AUDIO OK":"AUDIO --",SIM.audio?C_LIME:C_BLOOD,1);
+}
+
+// ---- Bandas tactiles de AJUSTES ----
+const BANDAS_BUG=[112,145,168,192];          // hud.c actual
+const BANDAS_FIX=[84,113,133,152];           // puntos medios reales entre filas
+function selDesdeY(y){
+  const b=FIX?BANDAS_FIX:BANDAS_BUG;
+  for(let i=0;i<4;i++) if(y<b[i]) return i;
+  return 4;
+}
+
+function touchDown(x,y){
+  s_t_down=performance.now();
+  if(PREG){
+    for(let i=0;i<PREG.opciones.length;i++){
+      if(dentro(pregBoton(i),x,y)){ s_pulsado=200+i; rippleLanza(x,y,pregBoton(i).color); return; }
+    }
+    s_pulsado=-1; return;
+  }
+  const acc=botonAccion(), ac=acento();
+  if(dentro(B_PREV,x,y)){ s_pulsado=BTN_PREV; rippleLanza(x,y,ac); }
+  else if(dentro(B_NEXT,x,y)){ s_pulsado=BTN_NEXT; rippleLanza(x,y,ac); }
+  else if(dentro(acc,x,y)){ s_pulsado=BTN_ACC; rippleLanza(x,y,ac); }
+  else{
+    s_pulsado=-1;
+    if(s_scr===SCR.AJUSTES){ s_sel=selDesdeY(y); rippleLanza(x,y,ac); }
+  }
+}
+function touchHold(x,y){
+  if(FIX&&s_pulsado>=0){                       // FIX 5: cancelar al salir
+    const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
+    if(!dentro(b,x,y)&&!s_hablando){ s_pulsado=-1; return; }
+  }
+  if(s_pulsado===BTN_ACC&&s_scr!==SCR.AJUSTES&&!s_hablando){
+    if(performance.now()-s_t_down>250){ s_hablando=true; s_state=ST.LISTENING; }
+  }
+}
+function touchUp(x,y){
+  if(PREG){
+    if(s_pulsado>=200&&dentro(pregBoton(s_pulsado-200),x,y)){
+      log(`respuesta: ${PREG.opciones[s_pulsado-200]}`); PREG=null;
+    }
+    s_pulsado=-1; return;
+  }
+  if(s_hablando){ s_hablando=false; s_state=ST.IDLE; s_pulsado=-1; return; }
+  if(FIX&&s_pulsado>=0){
+    const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
+    if(!dentro(b,x,y)){ s_pulsado=-1; return; }
+  }
+  const N=totalPantallas();
+  if(s_pulsado===BTN_PREV){ s_scr=(s_scr+N-1)%N; s_trans=8; }
+  else if(s_pulsado===BTN_NEXT){ s_scr=(s_scr+1)%N; s_trans=8; }
+  else if(s_pulsado===BTN_ACC){
+    if(s_scr===SCR.AJUSTES){
+      // FIX 3: el boton avanza la seleccion; toque largo incrementa
+      if(FIX&&performance.now()-s_t_down<400){ s_sel=(s_sel+1)%5; }
+      else incrementa();
+    }
+    else { s_scr=SCR.VOZ; if(FIX)s_trans=8; }   // FIX 6
+  }
+  s_pulsado=-1;
+}
+function incrementa(){
+  switch(s_sel){
+    case 0: A.brillo = A.brillo>=100?20:A.brillo+20; break;
+    case 1: A.volumen= A.volumen>=100?0:A.volumen+20; break;
+    case 2: A.tema=(A.tema+1)%4; break;
+    case 3: A.scanlines=!A.scanlines; break;
+    case 4: A.rejilla=!A.rejilla; break;
+  }
+  sincronizaUI();
+}
+
+function pVista(v){
+  if(!v||!v.filas.length){ textC(CX,112,"SIN DATOS",C_GREY,1); return; }
+  let y=62;
+  for(const f of v.filas.slice(0,6)){
+    fillCircle(28,y+3,2,COL[v.acento]||C_CYAN);
+    text(38,y,cut(f.txt,anchoSeguro(y,38)),COL[f.color]||C_WHITE,1);
+    if(f.badge){ const bx=CX+62;
+      fillCircle(bx,y+3,6,escala(COL[v.acento]||C_CYAN,90));
+      textC(bx,y,f.badge,C_WHITE,1); }
+    y+=20;
+  }
+}
+function pregBoton(i){
+  const n=Math.max(1,PREG.opciones.length), hueco=8, total=190;
+  const w=Math.floor((total-(n-1)*hueco)/n);
+  return {x:CX-total/2+i*(w+hueco),y:150,w:w,h:48,
+          txt:PREG.opciones[i],color:i===0?C_LIME:C_BLOOD,escala_txt:1};
+}
+function pPregunta(){
+  clear(C_VOID);
+  const ac=acento();
+  arc(CX,CY,117,2,0,359,ac);
+  textC(CX,30,"CONFIRMAR",escala(C_AMBER,240),1);
+  let y=66,linea="";
+  for(const w of PREG.txt.split(" ")){
+    if((linea+" "+w).trim().length<=26){ linea=(linea+" "+w).trim(); }
+    else { if(y<140){textC(CX,y,linea,C_WHITE,1); y+=16;} linea=w; }
+  }
+  if(linea&&y<140)textC(CX,y,linea,C_WHITE,1);
+  const resta=Math.max(0,Math.ceil((PREG.vence-Date.now())/1000));
+  textC(CX,132,resta+"s",escala(C_GREY,200),1);
+  for(let i=0;i<PREG.opciones.length;i++) boton(pregBoton(i),s_pulsado===200+i);
+  rippleDibuja();
+  if(resta<=0){ PREG=null; }
+}
+function bandaNoti(){
+  if(!NOTI||Date.now()>NOTI.hasta){NOTI=null;return;}
+  const c=COL[NOTI.color]||C_CYAN;
+  rect(0,44,240,18,escala(c,40)); rect(0,44,240,1,c); rect(0,61,240,1,c);
+  textC(CX,48,NOTI.txt,C_WHITE,1);
+}
+
+function render(){
+  if(PREG){ pPregunta(); s_t++; return; }
+  if(s_scr>=totalPantallas()) s_scr=0;
+  marco();
+  if(s_scr>=SCR.TOTAL){ pVista(VISTAS[s_scr-SCR.TOTAL]); bandaNoti(); dibujaBotones(); return; }
+  switch(s_scr){
+    case SCR.NUCLEO: pNucleo(); break;
+    case SCR.RELOJ: pReloj(); break;
+    case SCR.CLIMA: pClima(); break;
+    case SCR.VOZ: pVoz(); break;
+    case SCR.CHAT: pChat(); break;
+    case SCR.NOTICIAS: lista(news(),C_AMBER,SIM.voice?"CARGANDO":"SIN SERVIDOR"); break;
+    case SCR.MAC: lista(macl(),C_CYAN,SIM.voice?"MIDIENDO":"SIN SERVIDOR"); break;
+    case SCR.CREATIVO: lista(crel(),C_MAGENTA,SIM.voice?"CONSULTANDO":"SIN SERVIDOR"); break;
+    case SCR.AJUSTES: pAjustes(); break;
+    default: pSistema();
+  }
+  bandaNoti();
+  dibujaBotones();
+}
+function dibujaBotones(){
+  boton(B_PREV,s_pulsado===BTN_PREV);
+  boton(B_NEXT,s_pulsado===BTN_NEXT);
+  const acc=botonAccion();
+  boton(acc,s_pulsado===BTN_ACC||s_hablando);
+  rippleDibuja();
+  if(s_trans>0){ fade(255-s_trans*22); s_trans--; }
+  if(A.scanlines)scanlines(14);
+  if(A.rejilla)vineta();
+  s_t++;
+}
+
+// ════════════════════════════════════════════════════════════
+//  Presentacion
+// ════════════════════════════════════════════════════════════
+const cv=document.getElementById("lcd"), ctx=cv.getContext("2d");
+const img=ctx.createImageData(W,H);
+function flush(){
+  const d=img.data;
+  for(let i=0,j=0;i<W*H;i++,j+=4){
+    const c=fb[i];
+    d[j]  =((c>>11)&0x1F)*255/31|0;
+    d[j+1]=((c>>5)&0x3F)*255/63|0;
+    d[j+2]=(c&0x1F)*255/31|0;
+    // fuera del circulo: pixel muerto, el panel no existe ahi
+    const x=i%W, y=i/W|0, dx=x-120, dy=y-120;
+    d[j+3]=(dx*dx+dy*dy<=120*120)?255:0;
+  }
+  ctx.putImageData(img,0,0);
+  // atenuacion global por brillo, como el backlight PWM
+  if(A.brillo<100){
+    ctx.globalCompositeOperation="multiply";
+    const g=Math.round(255*(0.25+0.75*A.brillo/100));
+    ctx.fillStyle=`rgb(${g},${g},${g})`;
+    ctx.beginPath(); ctx.arc(120,120,120,0,7); ctx.fill();
+    ctx.globalCompositeOperation="source-over";
+  }
+}
+
+// ---- Toque ----
+const rxy=document.getElementById("rxy");
+let down=false;
+function pos(ev){
+  const r=cv.getBoundingClientRect();
+  const t=ev.touches?ev.touches[0]:ev;
+  return [Math.round((t.clientX-r.left)*W/r.width),
+          Math.round((t.clientY-r.top)*H/r.height)];
+}
+function ini(ev){ ev.preventDefault(); const[x,y]=pos(ev);
+  if((x-120)**2+(y-120)**2>120*120)return; down=true; touchDown(x,y); rxy.textContent=`${x},${y}`; }
+function mov(ev){ if(!down)return; ev.preventDefault(); const[x,y]=pos(ev);
+  touchHold(x,y); rxy.textContent=`${x},${y}`; }
+function fin(ev){ if(!down)return; ev.preventDefault(); const[x,y]=pos(ev);
+  down=false; touchUp(x,y); }
+cv.addEventListener("mousedown",ini); addEventListener("mousemove",mov); addEventListener("mouseup",fin);
+cv.addEventListener("touchstart",ini,{passive:false});
+cv.addEventListener("touchmove",mov,{passive:false});
+cv.addEventListener("touchend",fin,{passive:false});
+
+// ---- Selector de pantalla ----
+const cont=document.getElementById("screens");
+NOMBRES.forEach((n,i)=>{
+  const b=document.createElement("button");
+  b.textContent=n; b.onclick=()=>{s_scr=i;s_trans=8;pinta();};
+  cont.appendChild(b);
+});
+function pinta(){
+  [...cont.children].forEach((b,i)=>b.classList.toggle("on",i===s_scr));
+  document.getElementById("rscr").textContent=NOMBRES[s_scr];
+}
+
+// ---- Overlay de diagnostico ----
+const ov=document.getElementById("overlay");
+const $=id=>document.getElementById(id);
+function overlay(){
+  let s="";
+  if($("ovSafe").checked){
+    s+=`<circle cx="120" cy="120" r="118" fill="none" stroke="#4dff9d" stroke-width=".8" stroke-dasharray="3 3"/>`;
+    s+=`<circle cx="120" cy="120" r="120" fill="none" stroke="#ff4d5e" stroke-width=".8"/>`;
+  }
+  if($("ovTouch").checked){
+    const m=14;
+    for(const b of [B_PREV,B_NEXT]){
+      s+=`<rect x="${b.x-m}" y="${b.y-m}" width="${b.w+2*m}" height="${b.h+2*m}"
+           fill="#07c8ff18" stroke="#07c8ff" stroke-width=".7" stroke-dasharray="2 2"/>`;
+    }
+    const a=botonAccion();
+    if(a.redondo) s+=`<circle cx="${a.x+a.w/2}" cy="${a.y+a.h/2}" r="${a.w/2+m}"
+       fill="#ff9d2e18" stroke="#ff9d2e" stroke-width=".7" stroke-dasharray="2 2"/>`;
+    else s+=`<rect x="${a.x-m}" y="${a.y-m}" width="${a.w+2*m}" height="${a.h+2*m}"
+       fill="#ff9d2e18" stroke="#ff9d2e" stroke-width=".7" stroke-dasharray="2 2"/>`;
+  }
+  if($("ovRows").checked&&s_scr===SCR.AJUSTES){
+    const filas=[[62,"BRILLO"],[90,"VOLUMEN"],[122,"TEMA"],[142,"LINEAS"],[160,"REJILLA"]];
+    for(const[y,n] of filas){
+      s+=`<line x1="60" y1="${y+3}" x2="188" y2="${y+3}" stroke="#4dff9d" stroke-width=".6"/>`;
+      s+=`<text x="192" y="${y+6}" fill="#4dff9d" font-size="6">${n}</text>`;
+    }
+    const b=FIX?BANDAS_FIX:BANDAS_BUG;
+    for(const y of b)
+      s+=`<line x1="46" y1="${y}" x2="200" y2="${y}" stroke="${FIX?'#4dff9d':'#ff4d5e'}"
+           stroke-width=".8" stroke-dasharray="4 2"/>`;
+  }
+  ov.innerHTML=s;
+}
+
+// ---- Controles ----
+function sincronizaUI(){
+  $("sBri").value=A.brillo; $("vBri").textContent=A.brillo;
+  $("sVol").value=A.volumen; $("vVol").textContent=A.volumen;
+  $("sTema").value=A.tema;
+  $("cScan").checked=A.scanlines; $("cGrid").checked=A.rejilla;
+}
+$("sBri").oninput=e=>{A.brillo=+e.target.value;$("vBri").textContent=A.brillo;};
+$("sVol").oninput=e=>{A.volumen=+e.target.value;$("vVol").textContent=A.volumen;};
+$("sTema").onchange=e=>{A.tema=+e.target.value;};
+$("cScan").onchange=e=>{A.scanlines=e.target.checked;};
+$("cGrid").onchange=e=>{A.rejilla=e.target.checked;};
+for(const[id,k] of [["cNet","net"],["cAudio","audio"],["cVoice","voice"],
+                    ["cHora","hora"],["cClima","clima"],["cMicAuto","micAuto"]])
+  $(id).onchange=e=>{SIM[k]=e.target.checked;};
+$("sMic").oninput=e=>{SIM.mic=+e.target.value;$("vMic").textContent=SIM.mic;};
+$("sLen").oninput=e=>{SIM.len=+e.target.value;$("vLen").textContent=SIM.len;};
+$("fix").onchange=e=>{
+  FIX=e.target.checked;
+  document.querySelectorAll("#buglist li").forEach(li=>li.classList.toggle("fixed",FIX));
+};
+
+// ---- Bucle a 30 fps, como main.c ----
+function loop(){
+  if(SIM.micAuto&&s_hablando){
+    SIM.mic=Math.min(100,Math.max(0,SIM.mic+(Math.random()*40-15)));
+    $("sMic").value=SIM.mic|0; $("vMic").textContent=SIM.mic|0;
+  }else if(SIM.micAuto&&!s_hablando&&SIM.mic>0){
+    SIM.mic=Math.max(0,SIM.mic-6);
+    $("sMic").value=SIM.mic|0; $("vMic").textContent=SIM.mic|0;
+  }
+  render(); flush(); overlay();
+  $("rt").textContent=s_t; $("rsel").textContent=s_sel;
+  document.getElementById("rscr").textContent=NOMBRES[s_scr];
+  [...cont.children].forEach((b,i)=>b.classList.toggle("on",i===s_scr));
+  setTimeout(()=>requestAnimationFrame(loop),33);
+}
+sincronizaUI(); pinta(); loop();
+</script>
+</body>
+</html>

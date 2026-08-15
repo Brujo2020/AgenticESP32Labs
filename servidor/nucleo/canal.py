@@ -18,6 +18,24 @@ log = logging.getLogger("canal")
 # tamano de sus buffers estaticos, no una preferencia.
 LIMITES = {"vistas_max": 8, "filas_max": 6, "ancho": 26}
 
+# Modo compatibilidad con el firmware v1 (el que no manda handshake).
+# Ese firmware no sabe de vistas declarativas, pero SI tiene tres pantallas
+# que el servidor rellena por canales fijos. Mapeando las vistas a esos
+# canales, un agente puede pintar en el HUD sin reflashear nada.
+#
+#   SENALES  <- canal 'noticia'   (5 lineas de 33 caracteres)
+#   MAQUINA  <- canal 'mac'       (7 lineas)
+#   FORJA    <- canal 'creativo'  (7 lineas)
+#
+# No es tan bueno como el protocolo v2: son tres huecos con nombre fijo en
+# vez de ocho vistas con titulo propio. Pero funciona hoy.
+CANALES_V1 = {
+    "senales":  ("noticia",  "noticias_reset", 5, "SENALES"),
+    "maquina":  ("mac",      "mac_reset",      7, "MAQUINA"),
+    "forja":    ("creativo", "creativo_reset", 7, "FORJA"),
+}
+LIMITES_V1 = {"vistas_max": 3, "filas_max": 5, "ancho": 33}
+
 ACENTOS = {"cyan", "magenta", "lime", "amber", "ice", "blood", "grey", "white"}
 NIVELES = {"info", "ok", "warn", "error"}
 
@@ -54,6 +72,11 @@ class Canal:
         self.vistas.clear()
         log.info("dispositivo desconectado")
 
+    @property
+    def v2(self) -> bool:
+        """El firmware anuncio soporte del protocolo v2 en el handshake."""
+        return bool(self.fw)
+
     def saluda(self, data: dict):
         self.fw = data.get("fw", "?")
         for k in LIMITES:
@@ -77,8 +100,33 @@ class Canal:
             out["badge"] = str(f["badge"])[:3]
         return out
 
+    async def _mostrar_v1(self, id: str, filas: list) -> str:
+        """Pinta en el firmware v1 usando los canales que ya entiende."""
+        destino = CANALES_V1.get(id)
+        if not destino:
+            return ("Este firmware solo admite tres destinos: "
+                    + ", ".join(f"'{k}' (pantalla {v[3]})" for k, v in CANALES_V1.items())
+                    + ". Usa uno de esos como 'id', o actualiza el firmware al "
+                      "protocolo v2 para tener ocho vistas con titulo libre.")
+        canal, reset, maxf, pantalla = destino
+        await self._envia({"t": reset, "v": ""})
+        n = 0
+        for f in filas[:maxf]:
+            txt = (f if isinstance(f, str) else str(f.get("txt", "")))
+            txt = txt.upper()[: LIMITES_V1["ancho"]]
+            if txt:
+                await self._envia({"t": canal, "v": txt})
+                n += 1
+        self.vistas[id] = {"id": id, "filas": filas[:maxf], "modo": "v1"}
+        return (f"Pintadas {n} lineas en la pantalla {pantalla} del HUD "
+                f"(modo compatibilidad v1). Navega con los botones laterales.")
+
     async def mostrar(self, id: str, titulo: str, filas: list,
                       acento: str = "cyan", orden: int = 99, ttl: int = 0) -> str:
+        # Firmware sin protocolo v2: se degrada a los canales fijos en vez de
+        # fallar. Mejor tres pantallas hoy que ocho despues de reflashear.
+        if not self.v2:
+            return await self._mostrar_v1(str(id)[:15].lower(), filas or [])
         if acento not in ACENTOS:
             acento = "cyan"
         if len(self.vistas) >= self.limites["vistas_max"] and id not in self.vistas:
@@ -100,6 +148,13 @@ class Canal:
 
     async def borrar(self, id: str) -> str:
         id = str(id)[:15]
+        if not self.v2:
+            d = CANALES_V1.get(id.lower())
+            if d:
+                await self._envia({"t": d[1], "v": ""})
+                self.vistas.pop(id.lower(), None)
+                return f"Pantalla {d[3]} vaciada."
+            return f"No existe el destino '{id}'."
         if id not in self.vistas:
             return f"No existe la vista '{id}'. Activas: {sorted(self.vistas)}"
         await self._envia({"t": "vista_borra", "id": id})
@@ -189,6 +244,11 @@ class Canal:
     async def notifica(self, txt: str, nivel: str = "info", beep: bool = False) -> str:
         if nivel not in NIVELES:
             nivel = "info"
+        # El firmware v1 no tiene banda de aviso, pero si una linea de texto
+        # de estado que se ve en la pantalla VOZ. Se usa esa.
+        if not self.v2:
+            await self._envia({"t": "texto", "v": str(txt).upper()[:40]})
+            return f"Aviso mostrado en la pantalla VOZ: {txt}"
         await self._envia({"t": "notifica", "nivel": nivel, "beep": bool(beep),
                            "txt": str(txt).upper()[: self.limites["ancho"] * 2]})
         return f"Notificado ({nivel}): {txt}"
@@ -202,6 +262,9 @@ class Canal:
     def snapshot(self) -> dict:
         return {
             "conectado": self.vivo,
+            "protocolo": "v2" if self.v2 else "v1 (compatibilidad)",
+            "destinos": (sorted(self.vistas) if self.v2
+                         else [f"{k} -> pantalla {v[3]}" for k, v in CANALES_V1.items()]),
             "firmware": self.fw or None,
             "vistas_activas": sorted(self.vistas),
             "limites": self.limites,

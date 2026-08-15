@@ -1,0 +1,2 @@
+dependencies:
+  espressif/esp_lcd_touch_cst816s: "^1.0.5"

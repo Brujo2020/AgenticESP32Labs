@@ -1,0 +1,8 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+*.log
+.graphify/
+_to_delete/

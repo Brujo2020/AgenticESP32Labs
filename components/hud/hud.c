@@ -63,7 +63,7 @@ static void marco(void)
 
     // Marcador de pantalla activa, abajo
     for (int i = 0; i < SCR_TOTAL; i++)
-        display_fill_circle(CX - 21 + i * 14, 218, i == s_scr ? 4 : 2,
+        display_fill_circle(CX - 35 + i * 10, 218, i == s_scr ? 3 : 2,
                             i == s_scr ? C_CYAN : C_GREY);
 }
 
@@ -174,6 +174,67 @@ static void pantalla_sistema(void)
                         touch_ready() ? C_GREEN : C_RED, 1);
 }
 
+static void pantalla_chat(void)
+{
+    display_text_center(CX, 52, "CONVERSACION", C_GREY, 1);
+    int n = voice_hist_num();
+    if (n == 0) {
+        display_text_center(CX, 110, "MANTEN PARA", C_GREY, 1);
+        display_text_center(CX, 124, "HABLARME", C_GREY, 1);
+        return;
+    }
+    // Las mas recientes abajo; el ancho util se estrecha por ser circular
+    int y = 70;
+    for (int i = 0; i < n && y < 190; i++, y += 20) {
+        bool mio = voice_hist_es_mio(i);
+        display_text(mio ? 30 : 40, y, mio ? ">" : "<", mio ? C_CYAN : C_GREEN, 1);
+        display_text(mio ? 42 : 52, y, voice_hist(i), mio ? C_WHITE : C_GREEN, 1);
+    }
+}
+
+static void pantalla_noticias(void)
+{
+    display_text_center(CX, 50, "NOTICIAS IA", C_ORANGE, 1);
+    int n = voice_news_num();
+    if (n == 0) {
+        display_text_center(CX, 110, voice_connected() ? "CARGANDO" : "SIN SERVIDOR",
+                            voice_connected() ? C_GREY : C_RED, 1);
+        return;
+    }
+    int y = 74;
+    for (int i = 0; i < n && y < 190; i++, y += 22) {
+        display_fill_circle(32, y + 3, 2, C_ORANGE);
+        display_text(42, y, voice_news(i), C_WHITE, 1);
+    }
+}
+
+static void lista(const char *titulo, uint16_t col,
+                  int n, const char *(*get)(int), const char *vacio)
+{
+    display_text_center(CX, 48, titulo, col, 1);
+    if (n == 0) {
+        display_text_center(CX, 112, vacio, C_GREY, 1);
+        return;
+    }
+    int y = 68;
+    for (int i = 0; i < n && y < 192; i++, y += 18) {
+        display_fill_circle(30, y + 3, 2, col);
+        display_text(38, y, get(i), C_WHITE, 1);
+    }
+}
+
+static void pantalla_mac(void)
+{
+    lista("MI MAC", C_CYAN, voice_mac_num(), voice_mac,
+          voice_connected() ? "MIDIENDO" : "SIN SERVIDOR");
+}
+
+static void pantalla_creativo(void)
+{
+    lista("UNITY / BLENDER", C_PINK, voice_creativo_num(), voice_creativo,
+          voice_connected() ? "CONSULTANDO" : "SIN SERVIDOR");
+}
+
 void hud_render(void)
 {
     marco();
@@ -181,6 +242,10 @@ void hud_render(void)
         case SCR_RELOJ:   pantalla_reloj();   break;
         case SCR_CLIMA:   pantalla_clima();   break;
         case SCR_VOZ:     pantalla_voz();     break;
+        case SCR_CHAT:    pantalla_chat();    break;
+        case SCR_NOTICIAS:pantalla_noticias();break;
+        case SCR_MAC:     pantalla_mac();     break;
+        case SCR_CREATIVO:pantalla_creativo();break;
         default:          pantalla_sistema(); break;
     }
 

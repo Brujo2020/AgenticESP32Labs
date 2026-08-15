@@ -17,3 +17,22 @@ bool voice_talking(void);
 
 // Ultimo texto recibido del servidor (para pintarlo en la pantalla VOZ).
 const char *voice_text(void);
+
+// Historial de conversacion: lineas cortas, las mas recientes al final.
+#define VOZ_LINEAS   6
+#define VOZ_ANCHO   34
+int  voice_hist_num(void);
+const char *voice_hist(int i);      // 0 = mas antigua
+bool voice_hist_es_mio(int i);      // true si la dijo el usuario
+
+// Titulares de noticias que empuja el servidor.
+#define VOZ_NOTICIAS 5
+int  voice_news_num(void);
+const char *voice_news(int i);
+
+// Telemetria del Mac y de las apps creativas (Unity / Blender)
+#define VOZ_TELE 7
+int  voice_mac_num(void);
+const char *voice_mac(int i);
+int  voice_creativo_num(void);
+const char *voice_creativo(int i);

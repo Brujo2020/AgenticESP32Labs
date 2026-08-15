@@ -5,7 +5,8 @@
 typedef enum { ST_IDLE, ST_LISTENING, ST_PROCESSING, ST_SPEAKING, ST_ERROR } hud_state_t;
 
 // Pantallas: se cambia tocando la pantalla
-typedef enum { SCR_RELOJ, SCR_CLIMA, SCR_VOZ, SCR_SISTEMA, SCR_TOTAL } hud_screen_t;
+typedef enum { SCR_RELOJ, SCR_CLIMA, SCR_VOZ, SCR_CHAT,
+               SCR_NOTICIAS, SCR_MAC, SCR_CREATIVO, SCR_SISTEMA, SCR_TOTAL } hud_screen_t;
 
 void hud_init(void);
 void hud_set_state(hud_state_t s);

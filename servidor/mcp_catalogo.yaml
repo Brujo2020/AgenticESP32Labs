@@ -1,0 +1,109 @@
+# ============================================================
+#  Catalogo de MCP disponibles.
+#  Esto es la tienda; lo que este activo se decide en config.yaml
+#  (o mejor: con  python3 mcps_cli.py).
+#
+#  requisitos: lo que hace falta ANTES de que funcione
+#  env:        variables de entorno necesarias
+# ============================================================
+
+# ---------------- De tu Mac ----------------
+mac:
+  categoria: local
+  descripcion: "RAM, CPU, GPU, procesos y que hace cada uno, bateria, disco"
+  command: ["python3", "mcps/mac.py"]
+  env_dir: "."
+
+clima:
+  categoria: local
+  descripcion: "Meteorologia por Open-Meteo, sin clave"
+  command: ["python3", "mcps/clima.py"]
+  env_dir: "."
+
+sistema:
+  categoria: local
+  descripcion: "Volumen, notificaciones y utilidades de macOS"
+  command: ["python3", "mcps/sistema.py"]
+  env_dir: "."
+
+ficheros:
+  categoria: local
+  descripcion: "Leer y escribir archivos en una carpeta concreta"
+  command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "~/Documentos"]
+  requisitos: "Node instalado"
+
+memoria:
+  categoria: local
+  descripcion: "Memoria persistente en grafo entre conversaciones"
+  command: ["npx", "-y", "@modelcontextprotocol/server-memory"]
+  requisitos: "Node instalado"
+
+git:
+  categoria: local
+  descripcion: "Historial, diffs y estado de un repositorio"
+  command: ["uvx", "mcp-server-git", "--repository", "~/Proyectos/Development/esp32-hud-idf"]
+  requisitos: "uv instalado (brew install uv)"
+
+sqlite:
+  categoria: local
+  descripcion: "Consultas SQL sobre una base local"
+  command: ["uvx", "mcp-server-sqlite", "--db-path", "~/datos.db"]
+  requisitos: "uv instalado"
+
+blender:
+  categoria: local
+  descripcion: "Crear y modificar escenas 3D en Blender en vivo"
+  command: ["uvx", "blender-mcp"]
+  requisitos: "Addon BlenderMCP instalado y activo dentro de Blender"
+
+unity:
+  categoria: local
+  descripcion: "Manipular la escena y los assets de un proyecto Unity"
+  command: ["npx", "-y", "@coplaydev/unity-mcp"]
+  requisitos: "Paquete Unity MCP anadido al proyecto"
+
+apple-notes:
+  categoria: local
+  descripcion: "Leer y crear notas en Apple Notes"
+  command: ["npx", "-y", "@modelcontextprotocol/server-apple-notes"]
+  requisitos: "Permisos de automatizacion en macOS"
+
+# ---------------- Externos ----------------
+busqueda-brave:
+  categoria: externo
+  descripcion: "Busqueda web en tiempo real"
+  command: ["npx", "-y", "@modelcontextprotocol/server-brave-search"]
+  env: { BRAVE_API_KEY: "${BRAVE_API_KEY}" }
+  requisitos: "Clave gratuita en brave.com/search/api"
+
+github:
+  categoria: externo
+  descripcion: "Repositorios, issues y pull requests"
+  command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+  env: { GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}" }
+  requisitos: "Token personal de GitHub"
+
+fetch:
+  categoria: externo
+  descripcion: "Descargar una URL y convertirla a texto"
+  command: ["uvx", "mcp-server-fetch"]
+  requisitos: "uv instalado"
+
+slack:
+  categoria: externo
+  descripcion: "Leer y escribir en canales de Slack"
+  command: ["npx", "-y", "@modelcontextprotocol/server-slack"]
+  env: { SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}", SLACK_TEAM_ID: "${SLACK_TEAM_ID}" }
+  requisitos: "App de Slack con permisos de bot"
+
+postgres:
+  categoria: externo
+  descripcion: "Consultas de solo lectura sobre PostgreSQL"
+  command: ["npx", "-y", "@modelcontextprotocol/server-postgres", "${POSTGRES_URL}"]
+  requisitos: "Cadena de conexion en POSTGRES_URL"
+
+tiempo:
+  categoria: externo
+  descripcion: "Hora actual y conversion de zonas horarias"
+  command: ["uvx", "mcp-server-time", "--local-timezone", "America/Lima"]
+  requisitos: "uv instalado"

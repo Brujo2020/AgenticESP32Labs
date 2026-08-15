@@ -18,6 +18,7 @@
 #include "esp_http_client.h"
 #include "nvs_flash.h"
 #include "cJSON.h"
+#include "mdns.h"
 
 // ---- Ajusta esto a tu red y tu ubicacion ----
 #define WIFI_SSID   "(:<BrUjO>:)"
@@ -54,10 +55,7 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 esp_err_t net_init(void)
 {
-    esp_err_t r = nvs_flash_init();
-    if (r == ESP_ERR_NVS_NO_FREE_PAGES || r == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase(); nvs_flash_init();
-    }
+    // NVS ya lo inicializa main antes de cargar los ajustes
     s_evt = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -175,4 +173,31 @@ const char *net_weather_desc(int c)
     if (c <= 82) return "CHUBASCOS";
     if (c <= 99) return "TORMENTA";
     return "N D";
+}
+
+
+bool net_descubre_servidor(char *ip_out, int largo, int *puerto_out)
+{
+    if (!s_conn) return false;
+    if (mdns_init() != ESP_OK) return false;
+    mdns_hostname_set("mario-esp32");
+
+    mdns_result_t *r = NULL;
+    // Tres segundos son suficientes en una red domestica
+    if (mdns_query_ptr("_hud", "_tcp", 3000, 4, &r) != ESP_OK || !r) {
+        ESP_LOGW(TAG, "no se encontro ningun servidor por mDNS");
+        return false;
+    }
+    bool ok = false;
+    for (mdns_result_t *it = r; it; it = it->next) {
+        if (it->addr) {
+            snprintf(ip_out, largo, IPSTR, IP2STR(&it->addr->addr.u_addr.ip4));
+            if (puerto_out) *puerto_out = it->port;
+            ESP_LOGI(TAG, "servidor encontrado: %s:%d", ip_out, it->port);
+            ok = true;
+            break;
+        }
+    }
+    mdns_query_results_free(r);
+    return ok;
 }

@@ -13,6 +13,8 @@
 #include "net.h"
 #include "hud.h"
 #include "voice.h"
+#include "ajustes.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "main";
 
@@ -35,25 +37,40 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "=== Asistente ESP32-S3 ===");
 
+    // NVS antes que nada: de ahi salen las preferencias guardadas
+    esp_err_t nv = nvs_flash_init();
+    if (nv == ESP_ERR_NVS_NO_FREE_PAGES || nv == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    ajustes_cargar();
+
     ESP_ERROR_CHECK(display_init());
-    display_clear(C_DARK);
-    display_text_center(120, 110, "BOOT OK", C_GREEN, 2);
-    display_flush();
 
     // Ni el tactil ni el audio abortan el arranque si fallan:
     // se reflejan como puntos rojos en el HUD.
     if (touch_init() != ESP_OK) ESP_LOGW(TAG, "tactil no disponible");
     if (audio_init() != ESP_OK) ESP_LOGW(TAG, "audio no disponible");
-    // beep de arranque retirado a peticion: molestaba
+    ajustes_aplicar();          // brillo y volumen guardados en NVS
 
-    display_clear(C_DARK);
-    display_text_center(120, 110, "CONECTANDO", C_CYAN, 1);
+    hud_boot_anim();            // secuencia de arranque
+
+    display_clear(C_VOID);
+    display_text_center(120, 110, "ESTABLECIENDO ENLACE", C_CYAN, 1);
     display_flush();
 
     if (net_init() == ESP_OK) {
         net_sync_time();
         xTaskCreate(tarea_clima, "clima", 4096, NULL, 4, NULL);
-        voice_init(SERVIDOR_HOST, SERVIDOR_PORT);
+        // Primero se busca el servidor por mDNS; si no aparece,
+        // se recurre a la direccion fija de arriba.
+        char ip[16]; int puerto = SERVIDOR_PORT;
+        if (net_descubre_servidor(ip, sizeof(ip), &puerto)) {
+            voice_init(ip, puerto);
+        } else {
+            ESP_LOGW(TAG, "mDNS sin respuesta, uso %s", SERVIDOR_HOST);
+            voice_init(SERVIDOR_HOST, SERVIDOR_PORT);
+        }
     }
 
     hud_init();
@@ -73,14 +90,23 @@ void app_main(void)
         if (ahora && !tocado) {
             t_inicio = t;
         } else if (ahora && !hablando && (t - t_inicio) > 400) {
-            hablando = true;
-            voice_talk_start();
+            // Pulsacion larga: en AJUSTES modifica el control;
+            // en el resto de pantallas activa el microfono.
+            if (hud_en_ajustes()) {
+                hud_ajuste_incrementa();
+                t_inicio = t + 200;          // evita repetir sin soltar
+            } else {
+                hablando = true;
+                voice_talk_start();
+            }
         } else if (!ahora && tocado) {
             if (hablando) {
                 voice_talk_stop();
                 hablando = false;
-            } else {
-                hud_next_screen();      // fue un toque corto
+            } else if ((t - t_inicio) < 400) {
+                // Toque corto: en AJUSTES cambia de control, si no de pantalla
+                if (hud_en_ajustes()) hud_ajuste_siguiente();
+                else hud_next_screen();
             }
         }
         tocado = ahora;

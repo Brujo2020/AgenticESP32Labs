@@ -9,9 +9,14 @@
 # ============================================================
 
 proveedores:
-  # Groq primero: gratis, el mas rapido del mercado y con tool calling
-  # real, que es lo que hace que los MCP sirvan de algo.
-  llm: [groq, nvidia, mlx]
+  # Bedrock (Claude Haiku) primero: Groq alucinaba a veces la sintaxis del
+  # tool-call (400 tool_use_failed) y NVIDIA daba timeout seguido -- ninguno
+  # de los dos es culpa de nuestro codigo, pero tumbaban la respuesta
+  # completa. Bedrock corre en la misma nube que el servidor (AWS), factura
+  # contra el credito gratis de la cuenta, y Claude es mucho mas confiable
+  # llamando herramientas. Groq/nvidia quedan de respaldo por si Bedrock
+  # tuviera un problema puntual (o si un dia se agota el credito).
+  llm: [bedrock, groq, nvidia, mlx]
   stt: [groq, mlx-whisper]
   # Groq primero (misma clave que ya usas); macos de respaldo local si Groq
   # falla o si su frecuencia de muestreo no encaja con el firmware (ver
@@ -26,6 +31,12 @@ proveedores:
 catalogo:
 
   llm:
+    bedrock:                  # AWS · pagado con el credito gratis de la cuenta
+      backend: "bedrock"
+      model: "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+      region: "us-east-1"     # ajusta si habilitaste el modelo en otra region
+      description: "AWS Bedrock (Claude 3.5 Haiku) — mismo cloud que el servidor"
+
     groq:                     # GRATIS · https://console.groq.com
       backend: "openai-compatible"
       base_url: "https://api.groq.com/openai/v1"
@@ -38,6 +49,12 @@ catalogo:
       base_url: "https://integrate.api.nvidia.com/v1"
       model: "meta/llama-3.3-70b-instruct"
       api_key: "${NVIDIA_API_KEY}"
+      # NVIDIA ha dado timeout (ReadTimeout) repetidas veces, tanto en el
+      # Mac como en el servidor de AWS -- no es un problema de red local.
+      # Con el timeout por defecto (60s) cada fallo de nvidia significaba
+      # medio minuto de silencio en el HUD antes de caer al siguiente
+      # proveedor. Se acorta para que la cadena de respaldo reaccione rapido.
+      timeout: 15
       description: "NVIDIA NIM — gratis, ~40 req/min, 100+ modelos"
 
     mlx:                      # LOCAL · sin red, sin coste, privado

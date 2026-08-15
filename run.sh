@@ -68,7 +68,10 @@ echo "   flash OK"
 
 echo
 echo "== 5/5  ARRANQUE LIMPIO =="
-echo "   Desconecta y reconecta el cable SIN tocar botones."
+echo "   Desconecta el cable DEL TODO, espera 3s y reconecta SIN tocar BOOT."
+echo "   Este paso no es opcional: si el chip no ve un ciclo de alimentacion"
+echo "   limpio se queda en modo descarga (boot:0x23) y no ejecuta nada,"
+echo "   que desde fuera se ve como una pantalla negra."
 sleep 3
 PORT=$(wait_port x 60)
 if [ -z "$PORT" ]; then

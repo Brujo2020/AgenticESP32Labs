@@ -176,7 +176,6 @@ esp_err_t voice_init(const char *host, int port)
     s_ws = esp_websocket_client_init(&cfg);
     if (!s_ws) return ESP_FAIL;
     esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, on_ws, NULL);
-    vistas_init();
     vistas_set_emisor(emite);
     esp_err_t r = esp_websocket_client_start(s_ws);
     xTaskCreate(tarea_mic, "mic_ws", 4096, NULL, 5, NULL);

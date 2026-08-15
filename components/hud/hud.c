@@ -38,10 +38,48 @@ static int64_t s_t_down = 0;
 
 // Se dibujan discretos, pero ui_dentro() amplia el area de toque:
 // pequeno a la vista, comodo para el pulgar.
-static const boton_t B_PREV = { .x = 8,   .y = 96, .w = 26, .h = 48,
+static const boton_t B_PREV = { .x = 6,   .y = 96, .w = 22, .h = 48,
                                 .txt = "<", .color = C_GREY, .escala_txt = 1 };
-static const boton_t B_NEXT = { .x = 206, .y = 96, .w = 26, .h = 48,
+static const boton_t B_NEXT = { .x = 212, .y = 96, .w = 22, .h = 48,
                                 .txt = ">", .color = C_GREY, .escala_txt = 1 };
+
+// ---- Margenes laterales del contenido ----
+// Los botones de navegacion ocupan y 96..144, justo la banda donde caen las
+// filas 3 y 4 de cualquier lista. El contenido empezaba en x=28, que esta
+// DENTRO del boton izquierdo: la vineta se pintaba encima de el. Ahora todo
+// lo que sea contenido vive entre estos dos limites, con holgura por ambos
+// lados. ui_dentro() sigue ampliando el area de toque 14 px, asi que los
+// botones se dibujan mas finos pero no se vuelven mas dificiles de acertar.
+#define MARGEN_IZQ 40      // el boton < acaba en 28
+#define MARGEN_DER 202     // el boton > empieza en 212
+#define TXT_IZQ    (MARGEN_IZQ + 10)   // hueco para la vineta
+
+// Cuantos caracteres caben en la fila 'y' desde 'x0' sin salirse del cristal
+// ni invadir el margen derecho. La pantalla es redonda: cerca del borde
+// superior e inferior cabe mucho menos que en el centro.
+static int ancho_seguro(int y, int x0)
+{
+    int dy = y + 3 - CY;
+    int semi2 = 118 * 118 - dy * dy;
+    if (semi2 <= 0) return 0;
+    int semi = 0;
+    while ((semi + 1) * (semi + 1) <= semi2) semi++;      // sqrt entera
+    int limite = CX + semi;
+    if (limite > MARGEN_DER) limite = MARGEN_DER;          // respeta el margen
+    int n = (limite - x0) / 6;
+    return n < 0 ? 0 : n;
+}
+
+// Pinta recortando, en vez de dejar que el texto se salga o pise el boton
+static void texto_recortado(int x, int y, const char *t, uint16_t c)
+{
+    char buf[40];
+    int n = ancho_seguro(y, x);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
+    snprintf(buf, n + 1, "%s", t);
+    display_text(x, y, buf, c, 1);
+}
 
 static const char *NOMBRES[SCR_TOTAL] = {
     "NUCLEO","CRONO","ATMOS","VOZ","REGISTRO",
@@ -64,7 +102,7 @@ static boton_t boton_accion(void)
     if (s_scr == SCR_AJUSTES)
         return (boton_t){ .x = 96, .y = 182, .w = 48, .h = 26,
                           .txt = "MAS", .color = ac, .escala_txt = 1 };
-    return (boton_t){ .x = 100, .y = 182, .w = 40, .h = 40, .redondo = true,
+    return (boton_t){ .x = 100, .y = 176, .w = 40, .h = 40, .redondo = true,
                       .txt = s_hablando ? ".." : "VOZ",
                       .color = s_hablando ? C_LIME : ac, .escala_txt = 1 };
 }
@@ -153,7 +191,7 @@ static void marco(void)
 
     for (int i = 0; i < SCR_TOTAL; i++) {
         int x = CX - 45 + i * 10;
-        if (i == s_scr) display_fill_circle(x, 224, 2, ac);
+        if (i == (int)s_scr) display_fill_circle(x, 224, 2, ac);
         else display_px(x, 224, display_escala(ac, 130));
     }
 }
@@ -260,8 +298,8 @@ static void lista(int n, const char *(*get)(int), uint16_t col, const char *vaci
     if (n == 0) { display_text_center(CX, 112, vacio, C_GREY, 1); return; }
     int y = 62;
     for (int i = 0; i < n && i < 6; i++, y += 20) {
-        display_fill_circle(28, y + 3, 2, col);
-        display_text(38, y, get(i), C_WHITE, 1);
+        display_fill_circle(MARGEN_IZQ, y + 3, 2, col);
+        texto_recortado(TXT_IZQ, y, get(i), C_WHITE);
     }
 }
 
@@ -273,8 +311,8 @@ static void p_chat(void)
     int desde = (n > 6) ? n - 6 : 0;          // solo lo mas reciente
     for (int i = desde; i < n; i++, y += 20) {
         bool mio = voice_hist_es_mio(i);
-        display_text(26, y, mio ? ">" : "<", mio ? C_CYAN : C_LIME, 1);
-        display_text(38, y, voice_hist(i), mio ? C_WHITE : C_LIME, 1);
+        display_text(MARGEN_IZQ - 4, y, mio ? ">" : "<", mio ? C_CYAN : C_LIME, 1);
+        texto_recortado(TXT_IZQ, y, voice_hist(i), mio ? C_WHITE : C_LIME);
     }
 }
 
@@ -325,7 +363,8 @@ static void p_ajustes(void)
     conmutador(142, "LINEAS",  a->scanlines, s_sel == 3);
     conmutador(160, "REJILLA", a->rejilla,   s_sel == 4);
 
-    int marcas[5] = {66, 94, 122, 142, 160};
+    // Coinciden con la y real de cada etiqueta, no 4 px por debajo
+    int marcas[5] = {62, 90, 122, 142, 160};
     display_text(bx - 12, marcas[s_sel], ">", C_WHITE, 1);
 }
 
@@ -334,15 +373,19 @@ static void p_sistema(void)
     char t[32];
     uint16_t ac = ajustes_acento();
     int y = 66;
-    display_text(52, y, "IP", C_GREY, 1);  display_text(86, y, net_ip(), ac, 1); y += 20;
+    display_text(MARGEN_IZQ, y, "IP", C_GREY, 1);
+    texto_recortado(MARGEN_IZQ + 34, y, net_ip(), ac); y += 20;
     snprintf(t, sizeof(t), "%d DBM", net_rssi());
-    display_text(52, y, "RF", C_GREY, 1);
-    display_text(86, y, net_connected() ? t : "NO", net_connected() ? C_LIME : C_BLOOD, 1); y += 20;
+    display_text(MARGEN_IZQ, y, "RF", C_GREY, 1);
+    display_text(MARGEN_IZQ + 34, y, net_connected() ? t : "NO",
+                 net_connected() ? C_LIME : C_BLOOD, 1); y += 20;
     snprintf(t, sizeof(t), "%d KB", (int)(esp_get_free_heap_size() / 1024));
-    display_text(52, y, "RAM", C_GREY, 1); display_text(86, y, t, C_AMBER, 1); y += 20;
+    display_text(MARGEN_IZQ, y, "RAM", C_GREY, 1);
+    display_text(MARGEN_IZQ + 34, y, t, C_AMBER, 1); y += 20;
     int s = (int)(esp_timer_get_time() / 1000000);
     snprintf(t, sizeof(t), "%02d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60);
-    display_text(52, y, "ON", C_GREY, 1);  display_text(86, y, t, C_MAGENTA, 1); y += 24;
+    display_text(MARGEN_IZQ, y, "ON", C_GREY, 1);
+    display_text(MARGEN_IZQ + 34, y, t, C_MAGENTA, 1); y += 24;
     display_text_center(CX, y, audio_ready() ? "AUDIO OK" : "AUDIO --",
                         audio_ready() ? C_LIME : C_BLOOD, 1);
 }
@@ -363,10 +406,14 @@ void hud_touch_down(int x, int y)
         s_pulsado = -1;
         // Toque directo sobre una fila de AJUSTES: la selecciona
         if (s_scr == SCR_AJUSTES) {
-            if      (y < 112) s_sel = 0;
-            else if (y < 145) s_sel = 1;
-            else if (y < 168) s_sel = 2;
-            else if (y < 192) s_sel = 3;
+            // Puntos medios entre las filas reales (62/90/122/142/160).
+            // Las bandas anteriores (112/145/168/192) quedaron obsoletas al
+            // compactar el layout: de TEMA hacia abajo seleccionaban la fila
+            // anterior, y REJILLA era directamente inalcanzable.
+            if      (y < 84)  s_sel = 0;
+            else if (y < 113) s_sel = 1;
+            else if (y < 133) s_sel = 2;
+            else if (y < 152) s_sel = 3;
             else              s_sel = 4;
             ui_ripple_lanza(x, y, ac);
         }
@@ -388,19 +435,31 @@ void hud_touch_hold(int x, int y)
 
 void hud_touch_up(int x, int y)
 {
-    (void)x; (void)y;
     if (s_hablando) {
         voice_talk_stop();
         s_hablando = false;
         s_pulsado = -1;
         return;
     }
+    // Soltar fuera del boton cancela: el gesto estandar es poder arrastrar el
+    // dedo afuera para arrepentirse. Antes se ejecutaba igual.
+    if (s_pulsado >= 0) {
+        boton_t acc = boton_accion();
+        const boton_t *b = (s_pulsado == BTN_PREV) ? &B_PREV
+                         : (s_pulsado == BTN_NEXT) ? &B_NEXT : &acc;
+        if (!ui_dentro(b, x, y)) { s_pulsado = -1; return; }
+    }
     switch (s_pulsado) {
         case BTN_PREV: hud_prev_screen(); break;
         case BTN_NEXT: hud_next_screen(); break;
         case BTN_ACC:
-            if (s_scr == SCR_AJUSTES) hud_ajuste_incrementa();
-            else s_scr = SCR_VOZ;            // atajo a la pantalla de voz
+            if (s_scr == SCR_AJUSTES) {
+                // Toque corto mueve la seleccion, mantenido incrementa.
+                // hud_ajuste_siguiente() estaba exportada y nunca se llamaba.
+                if (esp_timer_get_time() / 1000 - s_t_down < 400) hud_ajuste_siguiente();
+                else hud_ajuste_incrementa();
+            }
+            else { s_scr = SCR_VOZ; s_trans = 8; }   // atajo, ahora con transicion
             break;
     }
     s_pulsado = -1;

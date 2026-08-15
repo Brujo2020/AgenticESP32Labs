@@ -1,0 +1,27 @@
+# ============================================================
+#  Plantilla de configuracion LOCAL
+#
+#  Copiala a  sdkconfig.defaults.esp32s3  y pon ahi tus datos.
+#  Ese fichero esta en .gitignore: tus credenciales no se versionan.
+#
+#      cp sdkconfig.defaults.esp32s3.ejemplo sdkconfig.defaults.esp32s3
+#
+#  ESP-IDF carga automaticamente sdkconfig.defaults.<target> despues de
+#  sdkconfig.defaults. Asi los valores sobreviven a `rm sdkconfig`, que es
+#  justo lo que hay que hacer cada vez que cambian los defaults.
+#
+#  Alternativa equivalente:  idf.py menuconfig
+#  (AgenticESP32Labs > Red WiFi)
+# ============================================================
+
+CONFIG_HUD_WIFI_SSID="tu-red-wifi"
+CONFIG_HUD_WIFI_PASS="tu-password"
+
+# IP del equipo donde corre servidor/websocket_bridge.py.
+# Solo se usa si mDNS no encuentra el servicio _hud._tcp.
+CONFIG_HUD_SERVER_HOST="192.168.1.100"
+
+# Zona horaria POSIX y coordenadas para el clima
+CONFIG_HUD_TIMEZONE="<-04>4"
+CONFIG_HUD_LATITUDE="-33.45"
+CONFIG_HUD_LONGITUDE="-70.67"

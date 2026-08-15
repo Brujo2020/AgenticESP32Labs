@@ -14,6 +14,7 @@
 #include "hud.h"
 #include "voice.h"
 #include "ajustes.h"
+#include "vistas.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
@@ -71,6 +72,10 @@ void app_main(void)
     ajustes_cargar();
 
     ESP_ERROR_CHECK(display_init());
+
+    // vistas_init aqui y no dentro de voice_init: voice_init solo se llama si
+    // el WiFi conecta, asi que sin red las vistas se quedaban sin inicializar.
+    vistas_init();
 
     // Ni el tactil ni el audio abortan el arranque si fallan:
     // se reflejan como puntos rojos en el HUD.

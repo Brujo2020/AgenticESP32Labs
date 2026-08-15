@@ -10,3 +10,7 @@ venv/
 __pycache__/
 *.pyc
 .git/_locks_viejos/
+
+# Configuracion local con credenciales: nunca se versiona.
+# La plantilla es sdkconfig.defaults.esp32s3.ejemplo
+sdkconfig.defaults.esp32s3

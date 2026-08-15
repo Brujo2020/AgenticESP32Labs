@@ -6,3 +6,7 @@ dependencies.lock
 *.log
 .graphify/
 _to_delete/
+venv/
+__pycache__/
+*.pyc
+.git/_locks_viejos/

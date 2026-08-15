@@ -12,6 +12,26 @@ echo "== 1/5  Cargando entorno ESP-IDF =="
 # La logica vive en entorno.sh para que monitor.sh la reutilice
 . "$PROJ/entorno.sh" || exit 1
 
+# --- sdkconfig obsoleto ---
+# Trampa clasica de ESP-IDF: sdkconfig.defaults SOLO se aplica cuando
+# sdkconfig no existe. Editar defaults con un sdkconfig ya generado no
+# cambia nada, y `idf.py fullclean` tampoco lo borra. Sintoma tipico:
+# se revierte una opcion que rompia el arranque, se recompila, y la
+# placa sigue rota porque el build usa el sdkconfig viejo.
+if [ -f "$PROJ/sdkconfig" ] && [ "$PROJ/sdkconfig.defaults" -nt "$PROJ/sdkconfig" ]; then
+    echo
+    echo "   AVISO: sdkconfig.defaults es mas reciente que sdkconfig."
+    echo "   El build va a IGNORAR los cambios de defaults."
+    echo "   Para aplicarlos:  rm sdkconfig && ./run.sh"
+    echo
+    printf "   Borrar sdkconfig y regenerarlo ahora? [s/N] "
+    read -r RESP
+    case "$RESP" in
+        [sSyY]) rm -f "$PROJ/sdkconfig"; echo "   sdkconfig borrado, se regenera desde defaults";;
+        *) echo "   Se mantiene el sdkconfig actual";;
+    esac
+fi
+
 echo "== 2/5  Compilando =="
 idf.py build > "$PROJ/build_out.log" 2>&1
 if [ $? -ne 0 ]; then

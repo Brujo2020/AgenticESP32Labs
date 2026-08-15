@@ -150,3 +150,10 @@ int audio_mic_level(void)
     s_level = (s_level * 6 + lvl * 4) / 10;   // suavizado
     return s_level;
 }
+
+void audio_play_pcm(const void *pcm, size_t bytes)
+{
+    if (!s_ready || !pcm || !bytes) return;
+    size_t w;
+    i2s_channel_write(s_tx, pcm, bytes, &w, pdMS_TO_TICKS(2000));
+}

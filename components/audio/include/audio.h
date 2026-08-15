@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include "esp_err.h"
 
 // Inicializa el codec ES8311 (mic + parlante) y el bus I2S.
@@ -16,3 +17,6 @@ int audio_mic_level(void);
 
 // Lee muestras crudas del microfono. Devuelve bytes leidos (0 si no hay).
 size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms);
+
+// Reproduce PCM 16-bit mono a la frecuencia de la placa.
+void audio_play_pcm(const void *pcm, size_t bytes);

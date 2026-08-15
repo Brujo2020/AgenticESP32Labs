@@ -37,7 +37,7 @@ void app_main(void)
     // se reflejan como puntos rojos en el HUD.
     if (touch_init() != ESP_OK) ESP_LOGW(TAG, "tactil no disponible");
     if (audio_init() != ESP_OK) ESP_LOGW(TAG, "audio no disponible");
-    if (audio_ready()) audio_beep(523, 90);
+    // beep de arranque retirado a peticion: molestaba
 
     display_clear(C_DARK);
     display_text_center(120, 110, "CONECTANDO", C_CYAN, 1);
@@ -58,7 +58,7 @@ void app_main(void)
         bool ahora = touch_get(&x, &y);
         if (ahora && !tocado) {
             hud_next_screen();
-            if (audio_ready()) audio_beep(392, 45);
+            // sin beep al tocar
         }
         tocado = ahora;
 

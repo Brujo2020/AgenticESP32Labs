@@ -12,6 +12,7 @@
 #include <time.h>
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"   // esp_get_free_heap_size
 
 #define CX 120
 #define CY 120

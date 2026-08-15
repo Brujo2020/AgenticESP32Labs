@@ -29,6 +29,9 @@ class Canal:
     limites: dict = field(default_factory=lambda: dict(LIMITES))
     vistas: dict = field(default_factory=dict)
     _pendientes: dict = field(default_factory=dict)   # qid -> Future
+    _resueltas: dict = field(default_factory=dict)    # qid -> resultado archivado
+    _vence: dict = field(default_factory=dict)        # qid -> instante limite
+    _opciones: dict = field(default_factory=dict)     # qid -> etiquetas
     _qid: int = 0
     estado: dict = field(default_factory=dict)
 
@@ -132,10 +135,55 @@ class Canal:
             return {"respondido": False, "opcion": None, "indice": -1, "segundos": seg}
         return {"respondido": True, "opcion": opciones[idx], "indice": idx, "segundos": seg}
 
+    async def pregunta_async(self, txt: str, opciones: list, timeout: int = 30) -> dict:
+        """Lanza la pregunta y devuelve el identificador sin esperar.
+
+        Es el patron Tasks de MCP 2026-07-28: retener un tool call mientras una
+        persona decide es justo lo que esa extension vino a eliminar.
+        """
+        opciones = [str(o).upper()[:10] for o in (opciones or ["SI", "NO"])][:3]
+        self._qid += 1
+        qid = f"q{self._qid}"
+        fut = asyncio.get_running_loop().create_future()
+        self._pendientes[qid] = fut
+        self._vence[qid] = time.time() + timeout
+        self._opciones[qid] = opciones
+        await self._envia({"t": "pregunta", "qid": qid,
+                           "txt": str(txt).upper()[: self.limites["ancho"] * 2],
+                           "opciones": opciones, "timeout": int(timeout)})
+        return {"qid": qid, "opciones": opciones, "timeout": int(timeout)}
+
+    def consulta(self, qid: str) -> dict:
+        """Estado de una pregunta lanzada con pregunta_async."""
+        fut = self._pendientes.get(qid)
+        if fut is None:
+            r = self._resueltas.get(qid)
+            return r or {"estado": "desconocido", "respondido": False,
+                         "opcion": None, "indice": -1}
+        if not fut.done():
+            resta = int(self._vence.get(qid, 0) - time.time())
+            if resta <= 0:
+                self.resuelve(qid, -1)
+                return self.consulta(qid)
+            return {"estado": "pendiente", "segundos": max(0, resta)}
+        return self._resueltas.get(qid, {"estado": "listo", "respondido": False})
+
     def resuelve(self, qid: str, opcion: int):
         fut = self._pendientes.get(qid)
         if fut and not fut.done():
             fut.set_result(int(opcion))
+        # Se archiva el resultado: quien consulte despues debe poder leerlo
+        # aunque el future ya se haya recogido.
+        ops = self._opciones.get(qid, [])
+        i = int(opcion)
+        self._resueltas[qid] = (
+            {"estado": "listo", "respondido": True, "opcion": ops[i],
+             "indice": i, "segundos": 0}
+            if 0 <= i < len(ops) else
+            {"estado": "listo", "respondido": False, "opcion": None,
+             "indice": -1, "segundos": 0})
+        self._pendientes.pop(qid, None)
+        self._vence.pop(qid, None)
 
     # ---------------- otros ----------------
     async def notifica(self, txt: str, nivel: str = "info", beep: bool = False) -> str:

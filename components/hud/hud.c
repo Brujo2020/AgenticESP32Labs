@@ -11,6 +11,7 @@
 #include "ajustes.h"
 #include "ui.h"
 #include "vistas.h"
+#include "trig.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -133,8 +134,8 @@ void hud_boot_anim(void)
             display_circle(CX, CY, r, display_escala(ac, br));
         }
         // Barrido radial
-        float a = f * 0.28f;
-        display_line(CX, CY, CX + (int)(115 * cosf(a)), CY + (int)(115 * sinf(a)),
+        int a = f * 16;                       // ~0.28 rad por fotograma
+        display_line(CX, CY, CX + trig_mul_cos(115, a), CY + trig_mul_sin(115, a),
                      display_escala(ac, 150));
 
         // La marca aparece letra a letra
@@ -280,12 +281,12 @@ static void p_voz(void)
     // Corona de barras radiales que reacciona a la voz
     // 16 barras finas: sugieren el nivel sin comerse la pantalla
     for (int i = 0; i < 16; i++) {
-        float a = i * 22.5f * (float)M_PI / 180.0f;
+        int a = i * 45 / 2;                   // 22.5 grados por barra
         int alto = 5 + (lvl * 5) / 30;
         if (alto > 18) alto = 18;
         for (int k = 0; k < alto; k++) {
             int r = 84 + k;
-            display_px(CX + (int)(r * cosf(a)), CY + (int)(r * sinf(a)), col);
+            display_px(CX + trig_mul_cos(r, a), CY + trig_mul_sin(r, a), col);
         }
     }
     display_text_center(CX, 104, txt, col, 1);

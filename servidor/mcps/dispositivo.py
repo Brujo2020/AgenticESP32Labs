@@ -103,6 +103,48 @@ async def _llama(fn, args, timeout=60):
 # ════════════════════════════════════════════════════════════
 
 @mcp.tool()
+async def hud_preguntar_async(pregunta: str, opciones: list[str] | None = None,
+                              timeout: int = 30) -> str:
+    """Lanza una pregunta al humano SIN bloquear, y devuelve un identificador.
+
+    Patron Tasks de MCP 2026-07-28: en vez de retener el tool call mientras
+    una persona decide, se devuelve un handle y se consulta con
+    hud_consultar(). Usar esta variante cuando tengas otras cosas que hacer
+    mientras esperas, o cuando el plazo sea largo.
+
+    Args:
+        pregunta: texto corto y sin ambiguedad.
+        opciones: hasta 3 etiquetas cortas. Por defecto ["SI", "NO"].
+        timeout: segundos antes de darla por no respondida.
+    """
+    r = await _llama("pregunta_async",
+                     {"txt": pregunta, "opciones": opciones or ["SI", "NO"],
+                      "timeout": timeout}, timeout=15)
+    if isinstance(r, str):
+        return r
+    return (f"Pregunta lanzada con id '{r.get('qid')}'. Consulta el resultado "
+            f"con hud_consultar('{r.get('qid')}'). Vence en {timeout}s.")
+
+
+@mcp.tool()
+async def hud_consultar(qid: str) -> str:
+    """Consulta el resultado de una hud_preguntar_async.
+
+    Devuelve 'pendiente' si el humano aun no ha tocado. No hagas espera activa
+    consultando en bucle cerrado: haz otra cosa util entre consultas.
+    """
+    r = await _llama("consulta", {"qid": qid}, timeout=15)
+    if isinstance(r, str):
+        return r
+    if r.get("estado") == "pendiente":
+        return f"PENDIENTE: quedan {r.get('segundos', 0)}s para que el humano decida."
+    if not r.get("respondido"):
+        return ("SIN RESPUESTA: vencio el plazo. Trata el silencio como una "
+                "negativa; no continues con la accion.")
+    return f"El humano eligio '{r['opcion']}' (opcion {r['indice']})."
+
+
+@mcp.tool()
 async def hud_preguntar(pregunta: str, opciones: list[str] | None = None,
                         timeout: int = 30) -> str:
     """Pregunta al humano en la pantalla del ESP32 y ESPERA su respuesta fisica.

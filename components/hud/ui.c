@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "display.h"
+#include "trig.h"
 #include <string.h>
 #include <math.h>
 
@@ -17,11 +18,9 @@ void ui_ripple_dibuja(void)
     if (s_rt < 0) return;
     int r = 4 + s_rt * 5;
     uint8_t alpha = (uint8_t)(140 - s_rt * 20);
-    for (int a = 0; a < 360; a += 4) {
-        float rad = a * (float)M_PI / 180.0f;
-        display_px_glow(s_rx + (int)(r * cosf(rad)),
-                        s_ry + (int)(r * sinf(rad)), s_rc, alpha);
-    }
+    for (int a = 0; a < 360; a += 4)
+        display_px_glow(s_rx + trig_mul_cos(r, a),
+                        s_ry + trig_mul_sin(r, a), s_rc, alpha);
     if (++s_rt > 6) s_rt = -1;
 }
 

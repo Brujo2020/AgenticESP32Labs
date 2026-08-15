@@ -13,6 +13,8 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_memory_utils.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -24,11 +26,23 @@
 #define W  BOARD_LCD_H_RES
 #define H  BOARD_LCD_V_RES
 #define STRIP 40
+#define N_STRIPS 2      // ping-pong: se copia uno mientras el otro va por DMA
 
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel = NULL;
 static uint16_t *s_fb = NULL;
-static uint16_t *s_strip = NULL;
+static uint16_t *s_strip[N_STRIPS] = {0};
+static SemaphoreHandle_t s_libre = NULL;    // transferencias DMA en vuelo
+
+// El driver avisa cuando termina de mandar un strip. Sin esto no se puede
+// saber cuando es seguro reutilizar el buffer y hay que ir en serie.
+static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *e, void *ctx)
+{
+    BaseType_t despertar = pdFALSE;
+    xSemaphoreGiveFromISR(s_libre, &despertar);
+    return despertar == pdTRUE;
+}
 
 esp_err_t display_init(void)
 {
@@ -61,8 +75,12 @@ esp_err_t display_init(void)
         ESP_LOGW(TAG, "sin PSRAM, el framebuffer cae a RAM interna");
         s_fb = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
     }
-    s_strip = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
-    ESP_RETURN_ON_FALSE(s_fb && s_strip, ESP_ERR_NO_MEM, TAG, "sin memoria");
+    for (int i = 0; i < N_STRIPS; i++) {
+        s_strip[i] = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
+        ESP_RETURN_ON_FALSE(s_strip[i], ESP_ERR_NO_MEM, TAG, "sin memoria DMA");
+    }
+    s_libre = xSemaphoreCreateCounting(N_STRIPS, N_STRIPS);
+    ESP_RETURN_ON_FALSE(s_fb && s_libre, ESP_ERR_NO_MEM, TAG, "sin memoria");
     ESP_LOGI(TAG, "framebuffer %d KB en %s",
              (int)(W * H * sizeof(uint16_t) / 1024),
              esp_ptr_external_ram(s_fb) ? "PSRAM" : "RAM interna");
@@ -87,6 +105,7 @@ esp_err_t display_init(void)
         .spi_mode = 0,
         .trans_queue_depth = 10,
     };
+    io_cfg.on_color_trans_done = on_trans_done;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_cfg, &io), TAG, "panel io");
 
     esp_lcd_panel_dev_config_t pcfg = {
@@ -178,13 +197,23 @@ void display_text_center(int cx, int y, const char *s, uint16_t c, int e)
     display_text(cx - (int)strlen(s) * 3 * e, y, s, c, e);
 }
 
+// Volcado solapado. Antes esto era memcpy y draw_bitmap en serie: la SPI
+// quieta mientras se copiaba, y la CPU quieta mientras se transmitia. Con
+// dos buffers DMA se copia el strip siguiente mientras el anterior viaja,
+// asi que el coste pasa a ser el maximo de ambos en vez de la suma.
 void display_flush(void)
 {
+    int b = 0;
     for (int y = 0; y < H; y += STRIP) {
         int lines = (y + STRIP > H) ? (H - y) : STRIP;
-        memcpy(s_strip, &s_fb[y * W], lines * W * sizeof(uint16_t));
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip);
+        // Espera a que este buffer concreto haya terminado de transmitirse
+        xSemaphoreTake(s_libre, portMAX_DELAY);
+        memcpy(s_strip[b], &s_fb[y * W], lines * W * sizeof(uint16_t));
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y, W, y + lines, s_strip[b]);
+        b = (b + 1) % N_STRIPS;
     }
+    // No se espera al ultimo strip: el siguiente fotograma ya se bloqueara
+    // en el semaforo si hace falta. Adelantar trabajo es gratis.
 }
 
 

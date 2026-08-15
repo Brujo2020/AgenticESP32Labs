@@ -36,10 +36,12 @@ static int64_t s_t_down = 0;
 #define BTN_NEXT 101
 #define BTN_ACC  102        // accion principal, cambia segun pantalla
 
-static const boton_t B_PREV = { .x = 6,   .y = 88, .w = 40, .h = 64,
-                                .txt = "<", .color = C_GREY, .escala_txt = 3 };
-static const boton_t B_NEXT = { .x = 194, .y = 88, .w = 40, .h = 64,
-                                .txt = ">", .color = C_GREY, .escala_txt = 3 };
+// Se dibujan discretos, pero ui_dentro() amplia el area de toque:
+// pequeno a la vista, comodo para el pulgar.
+static const boton_t B_PREV = { .x = 8,   .y = 96, .w = 26, .h = 48,
+                                .txt = "<", .color = C_GREY, .escala_txt = 1 };
+static const boton_t B_NEXT = { .x = 206, .y = 96, .w = 26, .h = 48,
+                                .txt = ">", .color = C_GREY, .escala_txt = 1 };
 
 static const char *NOMBRES[SCR_TOTAL] = {
     "NUCLEO","CRONO","ATMOS","VOZ","REGISTRO",
@@ -60,11 +62,11 @@ static boton_t boton_accion(void)
 {
     uint16_t ac = ajustes_acento();
     if (s_scr == SCR_AJUSTES)
-        return (boton_t){ .x = 84, .y = 168, .w = 72, .h = 48,
-                          .txt = "MAS", .color = ac, .escala_txt = 2 };
-    return (boton_t){ .x = 78, .y = 160, .w = 84, .h = 56, .redondo = true,
-                      .txt = s_hablando ? "..." : "VOZ",
-                      .color = s_hablando ? C_LIME : ac, .escala_txt = 2 };
+        return (boton_t){ .x = 96, .y = 182, .w = 48, .h = 26,
+                          .txt = "MAS", .color = ac, .escala_txt = 1 };
+    return (boton_t){ .x = 100, .y = 182, .w = 40, .h = 40, .redondo = true,
+                      .txt = s_hablando ? ".." : "VOZ",
+                      .color = s_hablando ? C_LIME : ac, .escala_txt = 1 };
 }
 void hud_ajuste_siguiente(void) { s_sel = (s_sel + 1) % 5; }
 
@@ -109,12 +111,10 @@ void hud_boot_anim(void)
             if (n > (int)strlen(marca)) n = strlen(marca);
             char buf[16] = {0};
             strncpy(buf, marca, n);
-            display_text_glow(CX, 112, buf, C_WHITE, 2);
+            display_text_center(CX, 112, buf, C_WHITE, 2);
         }
         if (f > 32) display_text_center(CX, 140, "SISTEMA EN LINEA",
                                         display_escala(ac, 200), 1);
-        display_scanlines(28);
-        display_vineta();
         display_flush();
         vTaskDelay(pdMS_TO_TICKS(28));
     }
@@ -136,33 +136,26 @@ static uint16_t color_estado(void)
 
 static void marco(void)
 {
-    ajustes_t *aj = ajustes();
     uint16_t ac = ajustes_acento();
     display_clear(C_VOID);
 
-    // Un unico aro grueso. Antes habia rejilla, satelites y tres arcos
-    // superpuestos: en 240 px de diametro eso solo ensucia.
-    display_arc(CX, CY, 118, 3, 0, 359, display_escala(ac, 70));
-
-    // Arco de actividad: una sola pasada, gruesa y brillante
+    // Un aro fino y un arco de actividad corto. Nada mas.
+    display_arc(CX, CY, 117, 1, 0, 359, display_escala(ac, 60));
     int a0 = s_t % 360;
-    display_arc_glow(CX, CY, 118, 4, a0, a0 + 55, ac);
+    display_arc(CX, CY, 117, 2, a0, a0 + 40, ac);
 
-    // Cabecera grande
-    display_text_glow(CX, 22, NOMBRES[s_scr], ac, 2);
+    display_text_center(CX, 18, NOMBRES[s_scr], display_escala(ac, 230), 1);
 
-    // Tres indicadores de enlace, mas grandes y separados
-    display_fill_circle(CX - 34, 46, 4, net_connected()   ? C_LIME : C_BLOOD);
-    display_fill_circle(CX,      46, 4, audio_ready()     ? C_LIME : C_BLOOD);
-    display_fill_circle(CX + 34, 46, 4, voice_connected() ? C_LIME : C_BLOOD);
+    // Indicadores de enlace, pequenos y bien separados
+    display_fill_circle(CX - 30, 34, 2, net_connected()   ? C_LIME : C_BLOOD);
+    display_fill_circle(CX,      34, 2, audio_ready()     ? C_LIME : C_BLOOD);
+    display_fill_circle(CX + 30, 34, 2, voice_connected() ? C_LIME : C_BLOOD);
 
-    // Paginacion
     for (int i = 0; i < SCR_TOTAL; i++) {
         int x = CX - 45 + i * 10;
-        if (i == s_scr) display_fill_circle(x, 222, 3, ac);
-        else display_fill_circle(x, 222, 1, display_escala(ac, 110));
+        if (i == s_scr) display_fill_circle(x, 224, 2, ac);
+        else display_px(x, 224, display_escala(ac, 130));
     }
-    (void)aj;
 }
 
 // ============================================================
@@ -172,16 +165,14 @@ static void p_nucleo(void)
 {
     uint16_t ac = ajustes_acento();
     int lvl = audio_mic_level();
-    float pulso = 0.5f + 0.5f * sinf(s_t * 0.08f);
-    int r = 40 + (int)(8 * pulso) + lvl / 4;
+    int r = 30 + lvl / 6;
 
-    display_fill_circle(CX, CY - 6, r, display_escala(ac, 45));
-    display_arc(CX, CY - 6, r, 3, 0, 359, ac);
-    display_text_glow(CX, CY - 18, "MARIO", C_WHITE, 3);
-    display_text_center(CX, CY + 6, "ESP32", display_escala(ac, 230), 2);
+    display_arc(CX, CY - 10, r, 1, 0, 359, display_escala(ac, 200));
+    display_text_center(CX, CY - 24, "MARIO", C_WHITE, 2);
+    display_text_center(CX, CY - 4, "ESP32", display_escala(ac, 220), 1);
 
-    display_text_center(CX, 186, net_connected() ? "EN LINEA" : "SIN RED",
-                        net_connected() ? C_LIME : C_BLOOD, 2);
+    display_text_center(CX, 176, net_connected() ? "EN LINEA" : "SIN RED",
+                        net_connected() ? C_LIME : C_BLOOD, 1);
 }
 
 static void p_reloj(void)
@@ -192,40 +183,37 @@ static void p_reloj(void)
     struct tm tm; localtime_r(&now, &tm);
 
     if (!net_time_valid()) {
-        display_text_center(CX, 110, "SIN HORA", C_GREY, 2);
+        display_text_center(CX, 112, "SIN HORA", C_GREY, 1);
         return;
     }
-    // Arco de segundos, grueso
-    display_arc_grad(CX, CY, 100, 5, -90, -90 + tm.tm_sec * 6, ac, C_MAGENTA);
+    display_arc(CX, CY, 104, 2, -90, -90 + tm.tm_sec * 6, ac);
 
     snprintf(txt, sizeof(txt), "%02d:%02d", tm.tm_hour, tm.tm_min);
-    display_text_glow(CX, 92, txt, C_WHITE, 6);
+    display_text_center(CX, 96, txt, C_WHITE, 4);
 
     snprintf(txt, sizeof(txt), "%02d", tm.tm_sec);
-    display_text_center(CX, 146, txt, C_MAGENTA, 3);
+    display_text_center(CX, 132, txt, display_escala(C_MAGENTA, 220), 1);
 
     static const char *dias[] = {"DOM","LUN","MAR","MIE","JUE","VIE","SAB"};
     snprintf(txt, sizeof(txt), "%s %02d/%02d", dias[tm.tm_wday % 7], tm.tm_mday, tm.tm_mon + 1);
-    display_text_center(CX, 184, txt, ac, 2);
+    display_text_center(CX, 154, txt, display_escala(ac, 200), 1);
 }
 
 static void p_clima(void)
 {
     clima_t c = net_weather();
-    if (!c.valid) { display_text_center(CX, 110, "SIN DATOS", C_GREY, 2); return; }
+    if (!c.valid) { display_text_center(CX, 112, "SIN DATOS", C_GREY, 1); return; }
 
     char t[24];
     int temp = (int)(c.temp_c + 0.5f);
     int pct = temp < 0 ? 0 : (temp > 40 ? 100 : temp * 100 / 40);
-    display_arc_grad(CX, CY, 100, 5, 150, 150 + pct * 24 / 10, C_CYAN, C_BLOOD);
+    display_arc(CX, CY, 104, 2, 150, 150 + pct * 24 / 10, C_AMBER);
 
-    snprintf(t, sizeof(t), "%d", temp);
-    display_text_glow(CX - 10, 88, t, C_WHITE, 6);
-    display_text(CX + 44, 96, "C", C_AMBER, 3);
-
-    display_text_center(CX, 150, net_weather_desc(c.codigo), C_ICE, 2);
+    snprintf(t, sizeof(t), "%dC", temp);
+    display_text_center(CX, 96, t, C_WHITE, 4);
+    display_text_center(CX, 138, net_weather_desc(c.codigo), C_ICE, 1);
     snprintf(t, sizeof(t), "%d KMH", (int)(c.viento_kmh + 0.5f));
-    display_text_center(CX, 182, t, display_escala(C_ICE, 200), 2);
+    display_text_center(CX, 158, t, display_escala(C_ICE, 190), 1);
 }
 
 static void p_voz(void)
@@ -249,53 +237,44 @@ static void p_voz(void)
     int lvl = audio_mic_level();
 
     // Corona de barras radiales que reacciona a la voz
-    // 24 barras gruesas en lugar de 48 finas: se leen mucho mejor
-    for (int i = 0; i < 24; i++) {
-        float a = i * 15.0f * (float)M_PI / 180.0f;
-        int alto = 8 + (lvl * (6 + (i % 4) * 4)) / 30;
-        if (alto > 30) alto = 30;
-        uint16_t cbar = display_mezcla(col, C_MAGENTA, (uint8_t)(alto * 255 / 30));
+    // 16 barras finas: sugieren el nivel sin comerse la pantalla
+    for (int i = 0; i < 16; i++) {
+        float a = i * 22.5f * (float)M_PI / 180.0f;
+        int alto = 5 + (lvl * 5) / 30;
+        if (alto > 18) alto = 18;
         for (int k = 0; k < alto; k++) {
-            int r = 74 + k;
-            for (int w = -2; w <= 2; w++) {
-                float aw = a + w * 0.010f;
-                display_px(CX + (int)(r * cosf(aw)), CY + (int)(r * sinf(aw)), cbar);
-            }
+            int r = 84 + k;
+            display_px(CX + (int)(r * cosf(a)), CY + (int)(r * sinf(a)), col);
         }
     }
-    display_text_glow(CX, 104, txt, col, 2);
+    display_text_center(CX, 104, txt, col, 1);
 
     const char *msg = voice_text();
-    if (msg && msg[0]) display_text_center(CX, 142, msg, C_WHITE, 2);
-    else display_text_center(CX, 142, voice_connected() ? "MANTEN" : "SIN RED",
-                             voice_connected() ? C_GREY : C_BLOOD, 2);
+    if (msg && msg[0]) display_text_center(CX, 126, msg, C_WHITE, 1);
+    else display_text_center(CX, 126, voice_connected() ? "MANTEN PARA HABLAR" : "SIN SERVIDOR",
+                             voice_connected() ? C_GREY : C_BLOOD, 1);
 }
 
 static void lista(int n, const char *(*get)(int), uint16_t col, const char *vacio)
 {
-    if (n == 0) { display_text_center(CX, 110, vacio, C_GREY, 2); return; }
-    // Cuatro lineas a doble tamano: mas legible que ocho diminutas
-    int y = 74;
-    for (int i = 0; i < n && i < 4; i++, y += 30) {
-        display_fill_circle(24, y + 7, 3, col);
-        char corto[18];
-        snprintf(corto, sizeof(corto), "%s", get(i));
-        display_text(36, y, corto, C_WHITE, 2);
+    if (n == 0) { display_text_center(CX, 112, vacio, C_GREY, 1); return; }
+    int y = 62;
+    for (int i = 0; i < n && i < 6; i++, y += 20) {
+        display_fill_circle(28, y + 3, 2, col);
+        display_text(38, y, get(i), C_WHITE, 1);
     }
 }
 
 static void p_chat(void)
 {
     int n = voice_hist_num();
-    if (n == 0) { display_text_center(CX, 110, "SIN CHARLA", C_GREY, 2); return; }
-    int y = 74;
-    int desde = (n > 4) ? n - 4 : 0;          // solo lo mas reciente
-    for (int i = desde; i < n; i++, y += 30) {
+    if (n == 0) { display_text_center(CX, 112, "SIN CHARLA", C_GREY, 1); return; }
+    int y = 62;
+    int desde = (n > 6) ? n - 6 : 0;          // solo lo mas reciente
+    for (int i = desde; i < n; i++, y += 20) {
         bool mio = voice_hist_es_mio(i);
-        char corto[17];
-        snprintf(corto, sizeof(corto), "%s", voice_hist(i));
-        display_text(24, y, mio ? ">" : "<", mio ? C_CYAN : C_LIME, 2);
-        display_text(46, y, corto, mio ? C_WHITE : C_LIME, 2);
+        display_text(26, y, mio ? ">" : "<", mio ? C_CYAN : C_LIME, 1);
+        display_text(38, y, voice_hist(i), mio ? C_WHITE : C_LIME, 1);
     }
 }
 
@@ -308,27 +287,26 @@ static void p_creativo(void) { lista(voice_creativo_num(), voice_creativo, C_MAG
 
 static void barra(int y, const char *etiqueta, int pct, uint16_t col, bool sel)
 {
-    int bw = 150, bx = CX - bw / 2;
-    display_text(bx, y - 22, etiqueta, sel ? C_WHITE : display_escala(col, 170), 2);
+    int bw = 104, bx = CX - bw / 2;
+    display_text(bx, y - 12, etiqueta, sel ? C_WHITE : display_escala(col, 160), 1);
     char t[8]; snprintf(t, sizeof(t), "%d", pct);
-    display_text(bx + bw - 34, y - 22, t, sel ? C_WHITE : C_GREY, 2);
+    display_text(bx + bw - 18, y - 12, t, sel ? C_WHITE : C_GREY, 1);
 
-    display_rect(bx, y, bw, 10, 0x2124);
-    for (int i = 0; i < bw * pct / 100; i++)
-        display_rect(bx + i, y, 1, 10, display_mezcla(col, C_MAGENTA, (uint8_t)(i * 255 / bw)));
+    display_rect(bx, y, bw, 5, 0x2124);
+    display_rect(bx, y, bw * pct / 100, 5, col);
     if (sel) {
-        display_rect(bx - 2, y - 3, 2, 16, C_WHITE);
-        display_rect(bx + bw, y - 3, 2, 16, C_WHITE);
+        display_rect(bx - 3, y - 2, 1, 9, C_WHITE);
+        display_rect(bx + bw + 2, y - 2, 1, 9, C_WHITE);
     }
 }
 
 static void conmutador(int y, const char *etiqueta, bool on, bool sel)
 {
-    int bx = CX - 75;
-    display_text(bx, y, etiqueta, sel ? C_WHITE : C_GREY, 2);
+    int bx = CX - 52;
+    display_text(bx, y, etiqueta, sel ? C_WHITE : C_GREY, 1);
     uint16_t c = on ? C_LIME : C_GREY;
-    display_rect(bx + 108, y + 2, 32, 12, display_escala(c, 80));
-    display_fill_circle(bx + (on ? 132 : 116), y + 8, 6, c);
+    display_rect(bx + 74, y + 1, 20, 7, display_escala(c, 90));
+    display_fill_circle(bx + (on ? 89 : 79), y + 4, 3, c);
 }
 
 static void p_ajustes(void)
@@ -337,37 +315,36 @@ static void p_ajustes(void)
     uint16_t ac = ajustes_acento();
     static const char *TEMAS[] = {"CIAN","MAGENTA","LIMA","AMBAR"};
 
-    barra(92,  "BRILLO",  a->brillo,  ac, s_sel == 0);
-    barra(130, "VOLUMEN", a->volumen, ac, s_sel == 1);
+    barra(74,  "BRILLO",  a->brillo,  ac, s_sel == 0);
+    barra(102, "VOLUMEN", a->volumen, ac, s_sel == 1);
 
-    int bx = CX - 75;
-    display_text(bx, 150, "TEMA", s_sel == 2 ? C_WHITE : C_GREY, 2);
-    display_text(bx + 74, 150, TEMAS[a->tema], ac, 2);
+    int bx = CX - 52;
+    display_text(bx, 122, "TEMA", s_sel == 2 ? C_WHITE : C_GREY, 1);
+    display_text(bx + 74, 122, TEMAS[a->tema], ac, 1);
 
-    conmutador(174, "LINEAS", a->scanlines, s_sel == 3);
-    conmutador(196, "REJILLA", a->rejilla, s_sel == 4);
+    conmutador(142, "LINEAS",  a->scanlines, s_sel == 3);
+    conmutador(160, "REJILLA", a->rejilla,   s_sel == 4);
 
-    if (s_sel >= 3) display_text(bx - 14, 174 + (s_sel - 3) * 22, ">", C_WHITE, 2);
-    else if (s_sel == 2) display_text(bx - 14, 150, ">", C_WHITE, 2);
+    int marcas[5] = {66, 94, 122, 142, 160};
+    display_text(bx - 12, marcas[s_sel], ">", C_WHITE, 1);
 }
 
 static void p_sistema(void)
 {
     char t[32];
     uint16_t ac = ajustes_acento();
-    int y = 74;
-    display_text(26, y, "IP", C_GREY, 2);
-    display_text(74, y, net_ip(), ac, 2); y += 28;
-    snprintf(t, sizeof(t), "%d", net_rssi());
-    display_text(26, y, "RF", C_GREY, 2);
-    display_text(74, y, net_connected() ? t : "NO", net_connected() ? C_LIME : C_BLOOD, 2); y += 28;
-    snprintf(t, sizeof(t), "%dK", (int)(esp_get_free_heap_size() / 1024));
-    display_text(26, y, "RAM", C_GREY, 2);
-    display_text(74, y, t, C_AMBER, 2); y += 28;
+    int y = 66;
+    display_text(52, y, "IP", C_GREY, 1);  display_text(86, y, net_ip(), ac, 1); y += 20;
+    snprintf(t, sizeof(t), "%d DBM", net_rssi());
+    display_text(52, y, "RF", C_GREY, 1);
+    display_text(86, y, net_connected() ? t : "NO", net_connected() ? C_LIME : C_BLOOD, 1); y += 20;
+    snprintf(t, sizeof(t), "%d KB", (int)(esp_get_free_heap_size() / 1024));
+    display_text(52, y, "RAM", C_GREY, 1); display_text(86, y, t, C_AMBER, 1); y += 20;
     int s = (int)(esp_timer_get_time() / 1000000);
-    snprintf(t, sizeof(t), "%02d:%02d", s / 3600, (s / 60) % 60);
-    display_text(26, y, "ON", C_GREY, 2);
-    display_text(74, y, t, C_MAGENTA, 2);
+    snprintf(t, sizeof(t), "%02d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60);
+    display_text(52, y, "ON", C_GREY, 1);  display_text(86, y, t, C_MAGENTA, 1); y += 24;
+    display_text_center(CX, y, audio_ready() ? "AUDIO OK" : "AUDIO --",
+                        audio_ready() ? C_LIME : C_BLOOD, 1);
 }
 
 // ============================================================
@@ -457,8 +434,8 @@ void hud_render(void)
         display_fade((uint8_t)(255 - s_trans * 22));
         s_trans--;
     }
-    if (ajustes()->scanlines) display_scanlines(18);
-    display_vineta();
+    if (ajustes()->scanlines) display_scanlines(14);
+    if (ajustes()->rejilla) display_vineta();   // la vineta pasa a ser opcional
     display_flush();
     s_t++;
 }

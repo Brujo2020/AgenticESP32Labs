@@ -11,6 +11,18 @@ cd "$PROJ" || exit 1
 
 . "$PROJ/entorno.sh" || exit 1
 
+# --sin-reset: no toca DTR/RTS al abrir el puerto.
+# En el S3 con USB nativo el chip interpreta esas lineas: RTS controla EN
+# (reset) y DTR controla GPIO0 (boot). macOS afirma DTR al abrir el puerto,
+# asi que abrir el monitor de la forma normal tira GPIO0 a masa y arranca en
+# modo descarga. Con esta opcion se conecta sin tocarlas y se ve lo que la
+# placa ya estaba haciendo.
+SIN_RESET=""
+if [ "$1" = "--sin-reset" ] || [ "$1" = "-s" ]; then
+    SIN_RESET="--no-reset"
+    shift
+fi
+
 PORT="$1"
 if [ -z "$PORT" ]; then
     echo "Buscando puerto (30s)..."
@@ -40,9 +52,13 @@ echo "Puerto: $PORT"
 echo "Pulsa el boton de RESET de la placa para ver el arranque."
 echo "Salir: Ctrl+]"
 echo
-echo "Si sale  boot:0x23 (DOWNLOAD(USB/UART0))  y 'waiting for download',"
-echo "la placa NO esta ejecutando el firmware: se quedo en modo descarga."
-echo "No es un fallo de codigo. Desconecta el cable del todo, espera 3s y"
-echo "vuelve a conectarlo SIN tocar BOOT. El arranque normal es  boot:0x2b."
+echo "boot:0x2b = arranque normal.  boot:0x23 = modo descarga (no ejecuta nada)."
+echo
+echo "Si sale 0x23 una y otra vez aunque hagas ciclos de alimentacion, es el"
+echo "propio monitor: al abrir el puerto macOS afirma DTR, y en el S3 con USB"
+echo "nativo DTR esta cableado a GPIO0. Prueba entonces:"
+echo "    ./monitor.sh --sin-reset"
+echo "y para sacarla del modo descarga:"
+echo "    esptool.py -p $PORT --after hard_reset chip_id"
 echo "------------------------------------------------------------"
-idf.py -p "$PORT" monitor
+idf.py -p "$PORT" monitor $SIN_RESET

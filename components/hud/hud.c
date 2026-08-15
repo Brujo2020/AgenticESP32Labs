@@ -404,6 +404,11 @@ void hud_touch_down(int x, int y)
     else if (ui_dentro(&acc, x, y))    { s_pulsado = BTN_ACC;  ui_ripple_lanza(x, y, ac); }
     else {
         s_pulsado = -1;
+        // La onda se lanza en cualquier toque, no solo sobre un boton. Sirve
+        // de retroalimentacion siempre, y hace visible DONDE cree el sistema
+        // que has tocado: si aparece en el lado contrario al dedo, los ejes
+        // del tactil estan mal, que es justo lo que pasaba.
+        ui_ripple_lanza(x, y, display_escala(ac, 120));
         // Toque directo sobre una fila de AJUSTES: la selecciona
         if (s_scr == SCR_AJUSTES) {
             // Puntos medios entre las filas reales (62/90/122/142/160).

@@ -7,6 +7,7 @@ PROJ="$HOME/Proyectos/Development/esp32-hud-idf"
 LOG="$PROJ/boot.log"
 cd "$PROJ" || exit 1
 
+echo "===== run.sh v3 ====="
 echo "== 1/5  Cargando entorno ESP-IDF =="
 export IDF_PATH="$HOME/esp/esp-idf"
 export IDF_TOOLS_PATH="$HOME/.espressif"
@@ -23,7 +24,19 @@ fi
 export PATH="$ENV_DIR/bin:$PATH"
 echo "   venv: $(basename "$ENV_DIR")  ($(python3 --version 2>&1))"
 
+export IDF_PYTHON_ENV_PATH="$ENV_DIR"
+if [ -f "$IDF_PATH/version.txt" ]; then
+    export ESP_IDF_VERSION=$(cut -d- -f1 "$IDF_PATH/version.txt" | sed 's/^v//' | cut -d. -f1,2)
+else
+    export ESP_IDF_VERSION="6.0"
+fi
+echo "   IDF_PYTHON_ENV_PATH=$IDF_PYTHON_ENV_PATH"
+echo "   ESP_IDF_VERSION=$ESP_IDF_VERSION"
+
 . "$IDF_PATH/export.sh" > "$PROJ/env_out.log" 2>&1
+# export.sh puede pisarlas o dejarlas vacias: se reponen
+[ -z "$IDF_PYTHON_ENV_PATH" ] && export IDF_PYTHON_ENV_PATH="$ENV_DIR"
+[ -z "$ESP_IDF_VERSION" ] && export ESP_IDF_VERSION="6.0"
 
 if ! command -v idf.py >/dev/null 2>&1; then
     echo "   FALLO el entorno. Ultimas lineas de env_out.log:"

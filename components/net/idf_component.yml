@@ -1,0 +1,3 @@
+dependencies:
+  # cJSON salio del core de ESP-IDF en la v6.0: ahora es componente gestionado
+  espressif/cjson: "^1.7.19"

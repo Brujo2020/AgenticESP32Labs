@@ -33,9 +33,13 @@ catalogo:
   llm:
     bedrock:                  # AWS · pagado con el credito gratis de la cuenta
       backend: "bedrock"
-      model: "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+      # Claude 3.5 Haiku llego a fin de vida en Bedrock (19 jun 2026) --
+      # "ResourceNotFoundException: This model version has reached the end
+      # of its life". Claude Haiku 4.5 es su sucesor con soporte completo
+      # (no solo cross-region routing) en us-east-1.
+      model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
       region: "us-east-1"     # ajusta si habilitaste el modelo en otra region
-      description: "AWS Bedrock (Claude 3.5 Haiku) — mismo cloud que el servidor"
+      description: "AWS Bedrock (Claude Haiku 4.5) — mismo cloud que el servidor"
 
     groq:                     # GRATIS · https://console.groq.com
       backend: "openai-compatible"

@@ -25,6 +25,7 @@ static i2c_master_dev_handle_t s_dev = NULL;
 static i2s_chan_handle_t s_tx = NULL, s_rx = NULL;
 static bool s_ready = false;
 static int  s_level = 0;
+static int  s_vol = 55;
 
 static esp_err_t reg_w(uint8_t reg, uint8_t val)
 {
@@ -157,3 +158,15 @@ void audio_play_pcm(const void *pcm, size_t bytes)
     size_t w;
     i2s_channel_write(s_tx, pcm, bytes, &w, pdMS_TO_TICKS(2000));
 }
+
+void audio_set_volume(int pct)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    s_vol = pct;
+    if (!s_ready) return;
+    // El registro 0x32 va de 0 a 255 de forma lineal
+    reg_w(0x32, (uint8_t)(pct ? (pct * 256 / 100) - 1 : 0));
+}
+
+int audio_volume(void) { return s_vol; }

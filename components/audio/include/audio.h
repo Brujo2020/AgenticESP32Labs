@@ -20,3 +20,7 @@ size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms);
 
 // Reproduce PCM 16-bit mono a la frecuencia de la placa.
 void audio_play_pcm(const void *pcm, size_t bytes);
+
+// Volumen del parlante 0..100 (registro 0x32 del ES8311).
+void audio_set_volume(int pct);
+int  audio_volume(void);

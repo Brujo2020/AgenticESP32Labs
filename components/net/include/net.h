@@ -23,3 +23,7 @@ bool net_time_valid(void);
 void net_weather_update(void);
 clima_t net_weather(void);
 const char *net_weather_desc(int codigo);
+
+// Descubre el servidor de voz por mDNS (_hud._tcp). Devuelve true y
+// escribe la IP encontrada; si no aparece nadie, devuelve false.
+bool net_descubre_servidor(char *ip_out, int largo, int *puerto_out);

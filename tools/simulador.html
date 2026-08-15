@@ -483,17 +483,17 @@ function touchHold(x,y){
     if(performance.now()-s_t_down>250){ s_hablando=true; s_state=ST.LISTENING; }
   }
 }
-function touchUp(x,y){
+function touchUp(){                      // no fiables, ver UX/UY
   if(PREG){
-    if(s_pulsado>=200&&dentro(pregBoton(s_pulsado-200),x,y)){
+    if(s_pulsado>=200&&dentro(pregBoton(s_pulsado-200),UX,UY)){
       log(`respuesta: ${PREG.opciones[s_pulsado-200]}`); PREG=null;
     }
     s_pulsado=-1; return;
   }
   if(s_hablando){ s_hablando=false; s_state=ST.IDLE; s_pulsado=-1; return; }
-  if(!FIX&&s_pulsado>=0){
+  if(!FIX&&s_pulsado>=0&&UX>=0){
     const b=s_pulsado===BTN_PREV?B_PREV:s_pulsado===BTN_NEXT?B_NEXT:botonAccion();
-    if(!dentro(b,x,y)){ s_pulsado=-1; return; }
+    if(!dentro(b,UX,UY)){ s_pulsado=-1; return; }
   }
   const N=totalPantallas();
   if(s_pulsado===BTN_PREV){ s_scr=(s_scr+N-1)%N; s_trans=8; }
@@ -623,6 +623,12 @@ function flush(){
 // ---- Toque ----
 const rxy=document.getElementById("rxy");
 let down=false;
+// Ultima posicion valida, igual que s_ux/s_uy en hud.c. El firmware NO
+// recibe coordenadas al soltar: touch_get() devuelve false sin escribirlas
+// y main.c reenvia los ceros. Se replica aqui, porque una divergencia de
+// comportamiento entre simulador y firmware es tan enganosa como una de
+// geometria: fue justo lo que dejo pasar el fallo de "soltar cancela".
+let UX=-1, UY=-1;
 function pos(ev){
   const r=cv.getBoundingClientRect();
   const t=ev.touches?ev.touches[0]:ev;
@@ -630,11 +636,12 @@ function pos(ev){
           Math.round((t.clientY-r.top)*H/r.height)];
 }
 function ini(ev){ ev.preventDefault(); const[x,y]=pos(ev);
-  if((x-120)**2+(y-120)**2>120*120)return; down=true; touchDown(x,y); rxy.textContent=`${x},${y}`; }
+  if((x-120)**2+(y-120)**2>120*120)return;
+  down=true; UX=x; UY=y; touchDown(x,y); rxy.textContent=`${x},${y}`; }
 function mov(ev){ if(!down)return; ev.preventDefault(); const[x,y]=pos(ev);
-  touchHold(x,y); rxy.textContent=`${x},${y}`; }
-function fin(ev){ if(!down)return; ev.preventDefault(); const[x,y]=pos(ev);
-  down=false; touchUp(x,y); }
+  UX=x; UY=y; touchHold(x,y); rxy.textContent=`${x},${y}`; }
+function fin(ev){ if(!down)return; ev.preventDefault();
+  down=false; touchUp(); }   // (0,0) como en el firmware
 cv.addEventListener("mousedown",ini); addEventListener("mousemove",mov); addEventListener("mouseup",fin);
 cv.addEventListener("touchstart",ini,{passive:false});
 cv.addEventListener("touchmove",mov,{passive:false});

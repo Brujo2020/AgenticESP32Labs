@@ -7,6 +7,7 @@
 #include "audio.h"
 #include "touch.h"
 #include "net.h"
+#include "voice.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -16,6 +17,9 @@
 
 #define CX 120
 #define CY 120
+
+// Azul corporativo NTT DATA aproximado en RGB565
+#define C_NTT  0x019F
 
 static hud_state_t  s_state = ST_IDLE;
 static hud_screen_t s_scr   = SCR_RELOJ;
@@ -53,9 +57,13 @@ static void marco(void)
     display_fill_circle(CX,      26, 4, audio_ready()   ? C_GREEN : C_RED);
     display_fill_circle(CX + 22, 26, 4, touch_ready()   ? C_GREEN : C_RED);
 
+    // Marca NTT DATA, discreta en la parte baja
+    display_text_center(CX, 196, "NTT DATA", C_NTT, 1);
+    display_rect(CX - 26, 205, 52, 1, C_NTT);
+
     // Marcador de pantalla activa, abajo
     for (int i = 0; i < SCR_TOTAL; i++)
-        display_fill_circle(CX - 21 + i * 14, 214, i == s_scr ? 4 : 2,
+        display_fill_circle(CX - 21 + i * 14, 218, i == s_scr ? 4 : 2,
                             i == s_scr ? C_CYAN : C_GREY);
 }
 
@@ -99,6 +107,15 @@ static void pantalla_clima(void)
 
 static void pantalla_voz(void)
 {
+    // El estado real lo manda el servidor a traves de voice
+    switch (voice_state()) {
+        case VOZ_ESCUCHANDO: s_state = ST_LISTENING;  break;
+        case VOZ_PENSANDO:   s_state = ST_PROCESSING; break;
+        case VOZ_HABLANDO:   s_state = ST_SPEAKING;   break;
+        case VOZ_ERROR:      s_state = ST_ERROR;      break;
+        default:             s_state = ST_IDLE;       break;
+    }
+
     const char *txt;
     switch (s_state) {
         case ST_LISTENING:  txt = "ESCUCHANDO";  break;
@@ -123,7 +140,11 @@ static void pantalla_voz(void)
                    : 0x2104;
         display_rect(bx + i, 172, 1, 7, c);
     }
-    display_text_center(CX, 186, "MIC", C_GREY, 1);
+    // Texto que manda el servidor (lo que entendio o lo que responde)
+    const char *msg = voice_text();
+    if (msg && msg[0]) display_text_center(CX, 186, msg, C_WHITE, 1);
+    else display_text_center(CX, 186, voice_connected() ? "MANTEN PARA HABLAR" : "SIN SERVIDOR",
+                             voice_connected() ? C_GREY : C_RED, 1);
 }
 
 static void pantalla_sistema(void)

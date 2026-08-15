@@ -5,6 +5,12 @@ malformadas, con escalada de capacidades y con intento de inyeccion, y se
 comprueba que ninguna llega al dispositivo. No pretende medir 78 % de nada;
 pretende que las categorias obvias esten cubiertas y no regresen.
 """
+import os, sys
+# Las pruebas se resuelven desde su propia ubicacion, no desde el cwd: asi
+# funcionan tanto con `python3 pruebas/x.py` desde servidor/ como desde la
+# raiz del repo o desde el hook de un CI.
+_SRV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_SRV)
 import importlib.util, sys, time
 
 _s = importlib.util.spec_from_file_location("guardia", "nucleo/guardia.py")

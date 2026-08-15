@@ -1,4 +1,10 @@
 """Prueba extremo a extremo: puente + ESP32 simulado + cliente de control."""
+import os, sys
+# Las pruebas se resuelven desde su propia ubicacion, no desde el cwd: asi
+# funcionan tanto con `python3 pruebas/x.py` desde servidor/ como desde la
+# raiz del repo o desde el hook de un CI.
+_SRV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_SRV)
 import asyncio, json, importlib.util, sys
 def carga(n,p):
     s=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(s)

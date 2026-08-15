@@ -35,18 +35,23 @@ else
     export ESP_IDF_VERSION="6.0"
 fi
 
-# export.sh es ruidoso; su salida solo interesa si algo falla
-_SALIDA=$(. "$IDF_PATH/export.sh" 2>&1)
+# OJO: export.sh se sourcea con redireccion a fichero, NUNCA capturando la
+# salida con $(...). La sustitucion de comandos crea una subshell, asi que
+# export.sh se ejecutaria "bien" pero todas las variables que exporta (PATH
+# incluido) moririan con la subshell. Sintoma exacto: dice "Done! You can now
+# compile ESP-IDF projects" y acto seguido idf.py sigue sin existir.
+_LOG="${TMPDIR:-/tmp}/idf_export.log"
+. "$IDF_PATH/export.sh" > "$_LOG" 2>&1
 
 # export.sh puede pisar estas variables o dejarlas vacias
 [ -z "$IDF_PYTHON_ENV_PATH" ] && export IDF_PYTHON_ENV_PATH="$_ENV_DIR"
 [ -z "$ESP_IDF_VERSION" ] && export ESP_IDF_VERSION="6.0"
 
 if ! command -v idf.py >/dev/null 2>&1; then
-    echo "FALLO al cargar el entorno de ESP-IDF:"
-    echo "$_SALIDA" | tail -12
+    echo "FALLO al cargar el entorno de ESP-IDF. Ultimas lineas de $_LOG:"
+    tail -12 "$_LOG"
     return 1 2>/dev/null || exit 1
 fi
 
 echo "ESP-IDF listo · venv $(basename "$_ENV_DIR") · $(command -v idf.py)"
-unset _ENV_DIR _SALIDA
+unset _ENV_DIR _LOG

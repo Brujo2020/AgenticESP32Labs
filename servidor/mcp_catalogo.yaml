@@ -107,3 +107,10 @@ tiempo:
   descripcion: "Hora actual y conversion de zonas horarias"
   command: ["uvx", "mcp-server-time", "--local-timezone", "America/Lima"]
   requisitos: "uv instalado"
+
+dispositivo:
+  categoria: propio
+  descripcion: "El ESP32 como herramienta: preguntar al humano, pintar vistas, notificar, hablar"
+  command: ["python3", "mcps/dispositivo.py"]
+  env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+  requisitos: "El puente websocket_bridge.py corriendo"

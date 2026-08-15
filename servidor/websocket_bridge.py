@@ -16,6 +16,7 @@ import asyncio, json, os, socket, subprocess, tempfile, wave, logging
 import websockets
 
 from nucleo import Agente, Config, MCPPool
+from nucleo.canal import CANAL
 from proveedores import cadenas_desde_config
 from noticias import titulares
 from telemetria import lineas_mac, lineas_creativo
@@ -165,8 +166,77 @@ async def envia(ws, tipo, valor):
     await ws.send(json.dumps({"t": tipo, "v": valor}))
 
 
+async def atiende_control(ws):
+    """Cliente de rol 'control': el MCP 'dispositivo'.
+
+    Traduce {"t":"cmd","fn":...} a llamadas sobre CANAL y devuelve {"t":"res"}.
+    Separado de atiende() porque un cliente de control no manda audio ni
+    necesita los feeds periodicos.
+    """
+    log.info("cliente de control conectado desde %s", ws.remote_address)
+    try:
+        async for msg in ws:
+            if isinstance(msg, bytes):
+                continue
+            d = json.loads(msg)
+            if d.get("t") != "cmd":
+                continue
+            rid, fn, args = d.get("rid"), d.get("fn"), d.get("args") or {}
+            try:
+                if not CANAL.vivo and fn != "estado":
+                    v = {"error": "no hay ESP32 conectado al puente"}
+                elif fn == "pregunta":
+                    v = await CANAL.pregunta(args.get("txt", ""),
+                                             args.get("opciones"),
+                                             int(args.get("timeout", 30)))
+                elif fn == "mostrar":
+                    v = await CANAL.mostrar(args.get("id", "vista"),
+                                            args.get("titulo", ""),
+                                            args.get("filas") or [],
+                                            args.get("acento", "cyan"),
+                                            int(args.get("orden", 99)),
+                                            int(args.get("ttl", 0)))
+                elif fn == "borrar":
+                    v = await CANAL.borrar(args.get("id", ""))
+                elif fn == "notifica":
+                    v = await CANAL.notifica(args.get("txt", ""),
+                                             args.get("nivel", "info"),
+                                             bool(args.get("beep")))
+                elif fn == "hablar":
+                    texto = args.get("texto", "")
+                    audio = await asyncio.to_thread(sintetiza, texto)
+                    for i in range(0, len(audio), 2048):
+                        await CANAL.ws.send(audio[i:i + 2048])
+                    await envia(CANAL.ws, "texto", texto[:40].upper())
+                    v = f"Dicho en voz alta: {texto}"
+                elif fn == "estado":
+                    v = CANAL.snapshot()
+                else:
+                    v = {"error": f"comando desconocido '{fn}'"}
+            except Exception as e:
+                log.error("cmd %s fallo: %s", fn, e)
+                v = {"error": str(e)}
+            await ws.send(json.dumps({"t": "res", "rid": rid, "v": v},
+                                     ensure_ascii=False))
+    except websockets.ConnectionClosed:
+        log.info("cliente de control desconectado")
+
+
 async def atiende(ws):
+    # El primer mensaje decide el rol: un cliente de control no es un ESP32.
+    try:
+        primero = await asyncio.wait_for(ws.recv(), timeout=2.0)
+        if isinstance(primero, str):
+            d = json.loads(primero)
+            if d.get("t") == "hola" and d.get("rol") == "control":
+                return await atiende_control(ws)
+            if d.get("t") == "hola":
+                CANAL.saluda(d)
+    except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed):
+        primero = None       # firmware v1: no saluda, se asume dispositivo
+
     log.info("ESP32 conectado desde %s", ws.remote_address)
+    CANAL.conecta(ws)
     buffer = bytearray()
     await envia(ws, "estado", "idle")
     tarea_news = asyncio.create_task(envia_noticias(ws))
@@ -180,6 +250,17 @@ async def atiende(ws):
 
             data = json.loads(msg)
             if data.get("t") == "ping":
+                continue
+
+            # Respuesta a un hud_preguntar: desbloquea al agente que espera
+            if data.get("t") == "respuesta":
+                CANAL.resuelve(data.get("qid", ""), data.get("opcion", -1))
+                continue
+
+            # Una vista interactiva: el usuario toco una fila
+            if data.get("t") == "evento":
+                log.info("evento en vista '%s': fila %s",
+                         data.get("id"), data.get("fila"))
                 continue
 
             if data.get("t") == "fin":
@@ -217,6 +298,7 @@ async def atiende(ws):
     except websockets.ConnectionClosed:
         log.info("ESP32 desconectado")
     finally:
+        CANAL.desconecta()
         tarea_news.cancel()
         tarea_tele.cancel()
 

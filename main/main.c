@@ -104,7 +104,10 @@ void app_main(void)
     // El render va en su propia tarea fijada al core 1. En ESP-IDF la pila
     // WiFi y lwIP viven en el core 0: dejarlos competir con el dibujado por
     // el mismo core produce tirones visibles cuando entra trafico.
-    xTaskCreatePinnedToCore(tarea_hud, "hud", 4096, NULL, 5, NULL, 1);
+    // 8192 y no 4096: hud_render encadena buffers de pila en varias pantallas
+    // y la tarea main original ya usaba 8192. Quedarse corto aqui provoca
+    // stack overflow y reinicio en bucle, que se ve como "no enciende".
+    xTaskCreatePinnedToCore(tarea_hud, "hud", 8192, NULL, 5, NULL, 1);
 
     // El hilo principal se queda solo vigilando el enlace, sin quemar CPU
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));

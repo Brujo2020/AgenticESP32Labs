@@ -15,24 +15,29 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 # Si el arranque se rompiera: comentar las cuatro lineas siguientes,
 # `idf.py fullclean && idf.py build flash`. display.c ya cae solo a RAM
 # interna con un aviso, asi que el codigo no necesita ningun cambio.
-CONFIG_SPIRAM=y
-CONFIG_SPIRAM_MODE_QUAD=y
-CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_USE_MALLOC=y
+# DESACTIVADA otra vez: se reactivo sin poder probarla en placa y el
+# dispositivo dejo de arrancar. La nota original tenia razon. Se vuelve a
+# intentar de una en una y verificando, no en bloque.
+# CONFIG_SPIRAM=y
+# CONFIG_SPIRAM_MODE_QUAD=y
+# CONFIG_SPIRAM_SPEED_80M=y
+# CONFIG_SPIRAM_USE_MALLOC=y
 
 # Solo lo grande va a PSRAM. Las reservas pequenas siguen en RAM interna,
 # que es mucho mas rapida: mandarlo todo fuera empeora en vez de mejorar.
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # ---- Cache ----
 # Con el framebuffer en PSRAM la cache de datos pasa a ser el factor
 # dominante del render: cada pixel escrito la atraviesa. 64KB y linea de
 # 64B es la diferencia entre que la PSRAM sirva o estorbe.
-CONFIG_ESP32S3_DATA_CACHE_64KB=y
-CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
-CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
-CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_64B=y
+# Cache: solo tenia sentido con el framebuffer en PSRAM. Sin ella, tocar
+# la configuracion de cache es riesgo sin ganancia.
+# CONFIG_ESP32S3_DATA_CACHE_64KB=y
+# CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+# CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+# CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_64B=y
 
 # CPU a full
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
@@ -51,7 +56,7 @@ CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
 # ---- Optimizar por velocidad ----
 # El render es el camino caliente y hay flash de sobra (16MB).
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+# CONFIG_SPI_MASTER_ISR_IN_IRAM=y
 
 # NOTA sobre PSRAM: sigue desactivada, segun lo verificado en placa mas
 # arriba. display.c intenta MALLOC_CAP_SPIRAM y cae solo a RAM interna con

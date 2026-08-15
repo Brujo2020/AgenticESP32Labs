@@ -15,13 +15,15 @@
 #include "voice.h"
 #include "ajustes.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "main";
 
-// Direccion del Mac donde corre websocket_bridge.py.
-// Se ve en la pantalla SISTEMA del propio Mac, o con: ipconfig getifaddr en0
-#define SERVIDOR_HOST  "192.168.1.100"
-#define SERVIDOR_PORT  8765
+// Direccion del equipo donde corre servidor/websocket_bridge.py.
+// Solo se usa como fallback si mDNS no responde.
+// Configurable en: idf.py menuconfig > AgenticESP32Labs > Servidor agentico
+#define SERVIDOR_HOST  CONFIG_HUD_SERVER_HOST
+#define SERVIDOR_PORT  CONFIG_HUD_SERVER_PORT
 
 // El clima se refresca en su propia tarea: la peticion HTTP bloquea
 // varios segundos y no debe congelar la animacion.

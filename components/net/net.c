@@ -19,13 +19,16 @@
 #include "nvs_flash.h"
 #include "cJSON.h"
 #include "mdns.h"
+#include "sdkconfig.h"
 
-// ---- Ajusta esto a tu red y tu ubicacion ----
-#define WIFI_SSID   "(:<BrUjO>:)"
-#define WIFI_PASS   "_BrUjO_The_Best_2020+$$$!"
-#define ZONA_HORARIA "<-05>5"          // UTC-5
-#define LAT  "-12.05"
-#define LON  "-77.04"
+// ---- Todo configurable via `idf.py menuconfig` ----
+//      AgenticESP32Labs > Red WiFi / Localizacion
+//      Los valores viven en sdkconfig, que git ignora.
+#define WIFI_SSID    CONFIG_HUD_WIFI_SSID
+#define WIFI_PASS    CONFIG_HUD_WIFI_PASS
+#define ZONA_HORARIA CONFIG_HUD_TIMEZONE
+#define LAT          CONFIG_HUD_LATITUDE
+#define LON          CONFIG_HUD_LONGITUDE
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_evt;
@@ -43,7 +46,7 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_conn = false;
-        if (s_retry < 5) { esp_wifi_connect(); s_retry++; }
+        if (s_retry < CONFIG_HUD_WIFI_MAX_RETRY) { esp_wifi_connect(); s_retry++; }
         else xEventGroupSetBits(s_evt, BIT_FAIL);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
@@ -180,11 +183,10 @@ bool net_descubre_servidor(char *ip_out, int largo, int *puerto_out)
 {
     if (!s_conn) return false;
     if (mdns_init() != ESP_OK) return false;
-    mdns_hostname_set("mario-esp32");
+    mdns_hostname_set(CONFIG_HUD_MDNS_HOSTNAME);
 
     mdns_result_t *r = NULL;
-    // Tres segundos son suficientes en una red domestica
-    if (mdns_query_ptr("_hud", "_tcp", 3000, 4, &r) != ESP_OK || !r) {
+    if (mdns_query_ptr("_hud", "_tcp", CONFIG_HUD_MDNS_TIMEOUT_MS, 4, &r) != ESP_OK || !r) {
         ESP_LOGW(TAG, "no se encontro ningun servidor por mDNS");
         return false;
     }

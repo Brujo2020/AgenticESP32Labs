@@ -1,0 +1,71 @@
+menu "AgenticESP32Labs - Configuracion del HUD"
+
+    menu "Red WiFi"
+
+        config HUD_WIFI_SSID
+            string "SSID de la red WiFi"
+            default "mi-red"
+            help
+                Nombre de la red WiFi a la que se conecta el ESP32.
+                No se versiona: se guarda en sdkconfig, ignorado por git.
+
+        config HUD_WIFI_PASS
+            string "Password de la red WiFi"
+            default ""
+            help
+                Clave WPA2 de la red. Dejar vacio para red abierta.
+                NUNCA escribir esta clave en codigo fuente.
+
+        config HUD_WIFI_MAX_RETRY
+            int "Reintentos de conexion antes de rendirse"
+            range 1 20
+            default 5
+
+    endmenu
+
+    menu "Servidor agentico"
+
+        config HUD_SERVER_HOST
+            string "IP o hostname del servidor (fallback)"
+            default "192.168.1.100"
+            help
+                Direccion del equipo donde corre servidor/websocket_bridge.py.
+                Solo se usa si el descubrimiento mDNS no encuentra el servicio
+                _hud._tcp en la red.
+
+        config HUD_SERVER_PORT
+            int "Puerto del servidor"
+            range 1 65535
+            default 8765
+
+        config HUD_MDNS_HOSTNAME
+            string "Hostname mDNS del propio ESP32"
+            default "mario-esp32"
+
+        config HUD_MDNS_TIMEOUT_MS
+            int "Timeout de la consulta mDNS (ms)"
+            range 500 10000
+            default 3000
+
+    endmenu
+
+    menu "Localizacion"
+
+        config HUD_TIMEZONE
+            string "Zona horaria (formato POSIX TZ)"
+            default "<-05>5"
+            help
+                Ejemplos: "<-05>5" para UTC-5 (Peru/Colombia),
+                "<-04>4" para Chile en horario estandar.
+
+        config HUD_LATITUDE
+            string "Latitud para el clima"
+            default "-12.05"
+
+        config HUD_LONGITUDE
+            string "Longitud para el clima"
+            default "-77.04"
+
+    endmenu
+
+endmenu

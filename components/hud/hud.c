@@ -9,6 +9,7 @@
 #include "net.h"
 #include "voice.h"
 #include "ajustes.h"
+#include "ui.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -26,6 +27,19 @@ static hud_screen_t s_scr   = SCR_NUCLEO;
 static int s_t = 0;                 // contador de fotogramas
 static int s_trans = 0;             // fotogramas restantes de transicion
 static int s_sel = 0;               // control seleccionado en AJUSTES
+static int  s_pulsado = -1;         // boton bajo el dedo ahora mismo
+static bool s_hablando = false;
+static int64_t s_t_down = 0;
+
+// ---- Botones fijos de navegacion (48 px: tamano de pulgar) ----
+#define BTN_PREV 100
+#define BTN_NEXT 101
+#define BTN_ACC  102        // accion principal, cambia segun pantalla
+
+static const boton_t B_PREV = { .x = 6,   .y = 88, .w = 40, .h = 64,
+                                .txt = "<", .color = C_GREY, .escala_txt = 3 };
+static const boton_t B_NEXT = { .x = 194, .y = 88, .w = 40, .h = 64,
+                                .txt = ">", .color = C_GREY, .escala_txt = 3 };
 
 static const char *NOMBRES[SCR_TOTAL] = {
     "NUCLEO","CRONO","ATMOS","VOZ","REGISTRO",
@@ -38,6 +52,20 @@ hud_state_t hud_get_state(void) { return s_state; }
 hud_screen_t hud_screen(void) { return s_scr; }
 bool hud_en_ajustes(void) { return s_scr == SCR_AJUSTES; }
 void hud_next_screen(void) { s_scr = (s_scr + 1) % SCR_TOTAL; s_trans = 8; }
+static void hud_prev_screen(void) { s_scr = (s_scr + SCR_TOTAL - 1) % SCR_TOTAL; s_trans = 8; }
+bool hud_hablando(void) { return s_hablando; }
+
+// El boton grande del centro-abajo: hablar, o ajustar el control activo
+static boton_t boton_accion(void)
+{
+    uint16_t ac = ajustes_acento();
+    if (s_scr == SCR_AJUSTES)
+        return (boton_t){ .x = 84, .y = 168, .w = 72, .h = 48,
+                          .txt = "MAS", .color = ac, .escala_txt = 2 };
+    return (boton_t){ .x = 78, .y = 160, .w = 84, .h = 56, .redondo = true,
+                      .txt = s_hablando ? "..." : "VOZ",
+                      .color = s_hablando ? C_LIME : ac, .escala_txt = 2 };
+}
 void hud_ajuste_siguiente(void) { s_sel = (s_sel + 1) % 5; }
 
 void hud_ajuste_incrementa(void)
@@ -343,6 +371,64 @@ static void p_sistema(void)
 }
 
 // ============================================================
+//  Tactil
+// ============================================================
+void hud_touch_down(int x, int y)
+{
+    s_t_down = esp_timer_get_time() / 1000;
+    boton_t acc = boton_accion();
+    uint16_t ac = ajustes_acento();
+
+    if (ui_dentro(&B_PREV, x, y))      { s_pulsado = BTN_PREV; ui_ripple_lanza(x, y, ac); }
+    else if (ui_dentro(&B_NEXT, x, y)) { s_pulsado = BTN_NEXT; ui_ripple_lanza(x, y, ac); }
+    else if (ui_dentro(&acc, x, y))    { s_pulsado = BTN_ACC;  ui_ripple_lanza(x, y, ac); }
+    else {
+        s_pulsado = -1;
+        // Toque directo sobre una fila de AJUSTES: la selecciona
+        if (s_scr == SCR_AJUSTES) {
+            if      (y < 112) s_sel = 0;
+            else if (y < 145) s_sel = 1;
+            else if (y < 168) s_sel = 2;
+            else if (y < 192) s_sel = 3;
+            else              s_sel = 4;
+            ui_ripple_lanza(x, y, ac);
+        }
+    }
+}
+
+void hud_touch_hold(int x, int y)
+{
+    (void)x; (void)y;
+    // Mantener el boton de voz activa el microfono
+    if (s_pulsado == BTN_ACC && s_scr != SCR_AJUSTES && !s_hablando) {
+        int64_t t = esp_timer_get_time() / 1000;
+        if (t - s_t_down > 250) {
+            s_hablando = true;
+            voice_talk_start();
+        }
+    }
+}
+
+void hud_touch_up(int x, int y)
+{
+    (void)x; (void)y;
+    if (s_hablando) {
+        voice_talk_stop();
+        s_hablando = false;
+        s_pulsado = -1;
+        return;
+    }
+    switch (s_pulsado) {
+        case BTN_PREV: hud_prev_screen(); break;
+        case BTN_NEXT: hud_next_screen(); break;
+        case BTN_ACC:
+            if (s_scr == SCR_AJUSTES) hud_ajuste_incrementa();
+            else s_scr = SCR_VOZ;            // atajo a la pantalla de voz
+            break;
+    }
+    s_pulsado = -1;
+}
+
 void hud_render(void)
 {
     marco();
@@ -359,11 +445,12 @@ void hud_render(void)
         default:           p_sistema();  break;
     }
 
-    int tx, ty;
-    if (touch_get(&tx, &ty)) {
-        display_fill_circle(tx, ty, 4, C_WHITE);
-        display_circle(tx, ty, 8, display_escala(ajustes_acento(), 180));
-    }
+    // Botones siempre encima del contenido
+    ui_boton(&B_PREV, s_pulsado == BTN_PREV);
+    ui_boton(&B_NEXT, s_pulsado == BTN_NEXT);
+    boton_t acc = boton_accion();
+    ui_boton(&acc, s_pulsado == BTN_ACC || s_hablando);
+    ui_ripple_dibuja();
 
     // Transicion al cambiar de pantalla: destello que se apaga
     if (s_trans > 0) {

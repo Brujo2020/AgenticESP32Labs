@@ -29,4 +29,10 @@ void hud_ajuste_siguiente(void);
 void hud_ajuste_incrementa(void);
 bool hud_en_ajustes(void);
 
+// Gestion tactil: main solo reenvia, la logica vive aqui
+void hud_touch_down(int x, int y);
+void hud_touch_hold(int x, int y);
+void hud_touch_up(int x, int y);
+bool hud_hablando(void);
+
 void hud_render(void);

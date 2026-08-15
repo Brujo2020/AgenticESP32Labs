@@ -32,7 +32,7 @@ esp_err_t touch_init(void)
         .y_max = BOARD_LCD_V_RES,
         .rst_gpio_num = BOARD_TP_RST,
         .int_gpio_num = BOARD_TP_INT,
-        .flags = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+        .flags = { .swap_xy = 0, .mirror_x = 1, .mirror_y = 0 },  // igual que el panel
     };
     ESP_RETURN_ON_ERROR(esp_lcd_touch_new_i2c_cst816s(io, &cfg, &s_tp), TAG, "cst816s");
     ESP_LOGI(TAG, "CST816 listo");

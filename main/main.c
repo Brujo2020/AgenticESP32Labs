@@ -79,36 +79,15 @@ void app_main(void)
     // Toque corto: cambia de pantalla.
     // Toque mantenido (mas de 400 ms): pulsar para hablar.
     bool tocado = false;
-    int64_t t_inicio = 0;
-    bool hablando = false;
 
     while (1) {
-        int x, y;
+        int x = 0, y = 0;
         bool ahora = touch_get(&x, &y);
-        int64_t t = esp_timer_get_time() / 1000;
 
-        if (ahora && !tocado) {
-            t_inicio = t;
-        } else if (ahora && !hablando && (t - t_inicio) > 400) {
-            // Pulsacion larga: en AJUSTES modifica el control;
-            // en el resto de pantallas activa el microfono.
-            if (hud_en_ajustes()) {
-                hud_ajuste_incrementa();
-                t_inicio = t + 200;          // evita repetir sin soltar
-            } else {
-                hablando = true;
-                voice_talk_start();
-            }
-        } else if (!ahora && tocado) {
-            if (hablando) {
-                voice_talk_stop();
-                hablando = false;
-            } else if ((t - t_inicio) < 400) {
-                // Toque corto: en AJUSTES cambia de control, si no de pantalla
-                if (hud_en_ajustes()) hud_ajuste_siguiente();
-                else hud_next_screen();
-            }
-        }
+        // La logica de botones vive en el HUD; aqui solo se reenvian los eventos
+        if (ahora && !tocado)      hud_touch_down(x, y);
+        else if (ahora)            hud_touch_hold(x, y);
+        else if (!ahora && tocado) hud_touch_up(x, y);
         tocado = ahora;
 
         hud_render();

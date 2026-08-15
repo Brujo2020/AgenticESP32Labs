@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "MCP: gestionar (activar / desactivar)",
+            "type": "shell",
+            "command": "cd ${workspaceFolder} && python3 mcps_cli.py",
+            "problemMatcher": [],
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": true }
+        },
+        {
+            "label": "MCP: probar los activos",
+            "type": "shell",
+            "command": "cd ${workspaceFolder} && python3 mcps_cli.py --probar",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "new", "clear": true }
+        },
+        {
+            "label": "Puente de voz: arrancar",
+            "type": "shell",
+            "command": "cd ${workspaceFolder} && python3 websocket_bridge.py",
+            "problemMatcher": [],
+            "isBackground": true,
+            "presentation": { "reveal": "always", "panel": "dedicated" }
+        },
+        {
+            "label": "Agente: consola de pruebas",
+            "type": "shell",
+            "command": "cd ${workspaceFolder} && python3 consola.py",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "new", "clear": true, "focus": true }
+        },
+        {
+            "label": "Instalar dependencias",
+            "type": "shell",
+            "command": "cd ${workspaceFolder} && pip3 install -r requirements.txt",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "new" }
+        }
+    ]
+}

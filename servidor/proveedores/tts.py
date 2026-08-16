@@ -1,5 +1,5 @@
 """Texto -> voz. Devuelve siempre PCM 16-bit mono crudo, listo para el I2S."""
-import io, os, subprocess, tempfile, wave, httpx
+import audioop, io, json, os, subprocess, tempfile, wave, httpx
 from .base import ProveedorTTS, ErrorProveedor
 from .llm import _expande
 
@@ -35,13 +35,32 @@ class TTSMacOS(ProveedorTTS):
 
 
 class TTSPiper(ProveedorTTS):
-    """Neuronal, local y multiplataforma. Para demos edge fuera de macOS."""
+    """Neuronal, local y multiplataforma. Respaldo de TTS que SI funciona en
+    un servidor Linux (a diferencia de 'macos', que exige el comando 'say').
+    Sin API, sin clave, sin limite de uso -- corre en la propia VM.
+    """
     nombre = "piper"
 
     def __init__(self, nombre="piper", cfg=None):
         cfg = cfg or {}
         self.nombre = nombre
         self.modelo = cfg.get("model_path", "")
+        # Piper genera el audio a la frecuencia nativa del modelo de voz
+        # (el sidecar <modelo>.onnx.json trae "audio":{"sample_rate":N}) --
+        # los modelos 'x_low' suelen ser 16000 Hz, no los 24000 Hz que pide
+        # el firmware. Si no se reconvierte, el audio suena mas rapido/agudo
+        # de lo debido (mismo problema que se valida en TTSOpenAICompatibleWav
+        # para Groq, aqui hay que resolverlo en vez de solo detectarlo porque
+        # Piper no tiene otra frecuencia que ofrecer).
+        self.tasa_modelo = self._lee_tasa_modelo()
+
+    def _lee_tasa_modelo(self) -> int:
+        ruta_json = f"{self.modelo}.json"
+        try:
+            with open(ruta_json) as f:
+                return json.load(f)["audio"]["sample_rate"]
+        except Exception:
+            return 22050  # frecuencia por defecto mas comun en voces Piper
 
     def disponible(self) -> bool:
         return bool(self.modelo) and os.path.exists(self.modelo)
@@ -50,9 +69,16 @@ class TTSPiper(ProveedorTTS):
         try:
             p = subprocess.run(["piper", "--model", self.modelo, "--output_raw"],
                                input=texto.encode(), capture_output=True, check=True)
-            return p.stdout
+            pcm = p.stdout
         except Exception as e:
             raise ErrorProveedor(f"{self.nombre}: {e}") from e
+        if self.tasa_modelo != sample_rate:
+            # audioop.ratecv: resampleo lineal, de la libreria estandar, sin
+            # dependencias nuevas. Sobra para voz (no es audio de alta
+            # fidelidad) y evita que el HUD reproduzca la respuesta a la
+            # velocidad/tono incorrectos.
+            pcm, _ = audioop.ratecv(pcm, 2, 1, self.tasa_modelo, sample_rate, None)
+        return pcm
 
 
 class TTSOpenAICompatible(ProveedorTTS):
@@ -79,8 +105,13 @@ class TTSOpenAICompatible(ProveedorTTS):
                            json={"model": self.model, "voice": self.voz,
                                  "input": texto, "response_format": self.formato},
                            timeout=60)
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # raise_for_status() sola solo dice "400 Bad Request" -- el
+                # cuerpo trae la razon real (voz invalida, texto vacio, etc.)
+                raise ErrorProveedor(f"{self.nombre}: {r.status_code} {r.text}")
             return r.content          # PCM 16-bit mono al sample_rate pedido
+        except ErrorProveedor:
+            raise
         except Exception as e:
             raise ErrorProveedor(f"{self.nombre}: {e}") from e
 

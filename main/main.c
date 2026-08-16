@@ -18,9 +18,12 @@
 
 static const char *TAG = "main";
 
-// Direccion del Mac donde corre websocket_bridge.py.
-// Se ve en la pantalla SISTEMA del propio Mac, o con: ipconfig getifaddr en0
-#define SERVIDOR_HOST  "192.168.1.100"
+// Direccion del servidor donde corre websocket_bridge.py.
+// Ahora vive en una VM de AWS Lightsail (IP publica y fija), no en el Mac:
+// el ESP32 esta en la red de casa y el servidor en la nube, asi que mDNS
+// (_hud._tcp) nunca los va a poner en contacto -- solo funciona dentro de
+// la misma red local. Esta IP fija es el unico camino real.
+#define SERVIDOR_HOST  "56.125.193.142"
 #define SERVIDOR_PORT  8765
 
 // El clima se refresca en su propia tarea: la peticion HTTP bloquea

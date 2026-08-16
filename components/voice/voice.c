@@ -425,4 +425,10 @@ void voice_talk_stop(void)
     // numero fijo: no puede volver a desincronizarse del literal.
     static const char msg[] = "{\"t\":\"fin\"}";
     esp_websocket_client_send_text(s_ws, msg, strlen(msg), portMAX_DELAY);
+
+    // Pitido corto de confirmacion: "ya se envio, esperando respuesta".
+    // Sin esto no habia ninguna senal audible de que soltar el boton hizo
+    // algo -- el usuario no sabe si el mensaje se mando o si el gesto fallo,
+    // hasta que (si acaso) llega la respuesta varios segundos despues.
+    audio_beep(1200, 90);
 }

@@ -53,17 +53,29 @@ esp_err_t bateria_init(void)
         return ESP_FAIL;
     }
 
-    // Calibracion por curva de fabrica. Sin ella la lectura se desvia bastante
-    // entre chips; si no esta disponible se sigue adelante con la conversion
+    // Calibracion de fabrica. Sin ella la lectura se desvia bastante entre
+    // chips; si no esta disponible se sigue adelante con la conversion
     // aproximada -- mejor un porcentaje algo impreciso que ninguno.
+    //
+    // Que esquema existe depende del chip y de la version de IDF, asi que se
+    // elige en tiempo de compilacion igual que en los ejemplos oficiales: el
+    // ESP32-S3 usa curve fitting, otros usan line fitting. Sin los #if, este
+    // fichero no compila en cualquier target aunque el codigo sea correcto.
+#if defined(ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED) && ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cal = {
         .unit_id = BAT_UNIT, .chan = BAT_CHANNEL,
         .atten = BAT_ATTEN, .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    if (adc_cali_create_scheme_curve_fitting(&cal, &s_cali) != ESP_OK) {
-        s_cali = NULL;
-        ESP_LOGW(TAG, "sin calibracion de fabrica, lectura aproximada");
-    }
+    if (adc_cali_create_scheme_curve_fitting(&cal, &s_cali) != ESP_OK) s_cali = NULL;
+#elif defined(ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED) && ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t cal = {
+        .unit_id = BAT_UNIT, .atten = BAT_ATTEN, .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    if (adc_cali_create_scheme_line_fitting(&cal, &s_cali) != ESP_OK) s_cali = NULL;
+#else
+    s_cali = NULL;
+#endif
+    if (!s_cali) ESP_LOGW(TAG, "sin calibracion de fabrica, lectura aproximada");
 
     // Deteccion de carga: el pin va a masa cuando el cargador esta activo.
     gpio_config_t g = {

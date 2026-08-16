@@ -345,6 +345,10 @@ static void pinta_bateria(void)
     if (!bateria_disponible()) return;
     int pct = bateria_pct();
     if (pct < 0) return;
+    // Acotar aqui no es paranoia: sin esto el compilador no puede probar que
+    // el "%d" de abajo cabe en el buffer y -Werror=format-truncation tumba
+    // la compilacion. Ademas deja el ancho de la barra siempre en rango.
+    if (pct > 100) pct = 100;
 
     const int x = 158, y = 30, an = 22, al = 11;   // cuerpo de la pila
     bool cargando = bateria_cargando();

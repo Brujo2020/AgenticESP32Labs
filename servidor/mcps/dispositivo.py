@@ -246,6 +246,25 @@ async def hud_configurar(brillo: int | None = None, volumen: int | None = None,
 
 
 @mcp.tool()
+async def hud_pantallas(activas: list[str], orden: list[str] | None = None) -> str:
+    """Elige que pantallas fijas se ven en el carrusel del ESP32 y en que orden.
+
+    Se guarda en la memoria del dispositivo: sobrevive al reinicio. 'ajustes'
+    se mantiene siempre visible aunque no la incluyas, para que el usuario no
+    se quede sin forma de recuperar el HUD desde el propio aparato.
+
+    Args:
+        activas: nombres de pantalla a mostrar. Validas: nucleo, reloj, clima,
+                 voz, chat, noticias, mac, creativo, ajustes, sistema.
+        orden: mismas etiquetas, en el orden de recorrido deseado. Opcional.
+    """
+    args = {"activas": activas}
+    if orden:
+        args["orden"] = orden
+    return await _llama("pantallas", args)
+
+
+@mcp.tool()
 async def hud_reiniciar() -> str:
     """Reinicia el ESP32 (esp_restart). Corta la sesion de voz en curso.
 

@@ -52,6 +52,7 @@ EXIGE = {
     "estado":   "estado",
     "configurar": "administrar",
     "reiniciar":  "administrar",
+    "pantallas":  "administrar",
 }
 
 # Limites de tasa por comando: (llamadas, ventana en segundos).
@@ -70,6 +71,7 @@ LIMITES = {
     "estado":   (60, 60),
     "configurar": (20, 60),
     "reiniciar":  (2, 300),
+    "pantallas":  (20, 60),
 }
 
 
@@ -262,6 +264,19 @@ class Guardia:
             if a.get("efectos") is not None:
                 out["efectos"] = bool(a.get("efectos"))
             return out
+
+        if cmd == "pantallas":
+            act = a.get("activas")
+            if not isinstance(act, list) or not act:
+                raise Rechazo("'activas' debe ser una lista no vacia de pantallas.")
+            if len(act) > 10:
+                raise Rechazo(f"Llegaron {len(act)} pantallas y solo hay 10 fijas.")
+            orden = a.get("orden")
+            if orden is not None and not isinstance(orden, list):
+                raise Rechazo("'orden' debe ser una lista.")
+            # Los nombres/indices se validan en Canal.pantallas contra la
+            # lista real del firmware: aqui solo se acota forma y tamano.
+            return {"activas": act, "orden": orden, "__dry_run__": seco}
 
         if cmd == "reiniciar":
             return {"__dry_run__": seco}

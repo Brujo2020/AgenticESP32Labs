@@ -14,6 +14,7 @@
 #include "hud.h"
 #include "voice.h"
 #include "ajustes.h"
+#include "bateria.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "main";
@@ -103,6 +104,8 @@ void app_main(void)
     // se reflejan como puntos rojos en el HUD.
     if (touch_init() != ESP_OK) ESP_LOGW(TAG, "tactil no disponible");
     if (audio_init() != ESP_OK) ESP_LOGW(TAG, "audio no disponible");
+    // Tampoco aborta: sin ADC el HUD simplemente no pinta el indicador.
+    if (bateria_init() != ESP_OK) ESP_LOGW(TAG, "bateria no disponible");
     ajustes_aplicar();          // brillo y volumen guardados en NVS
 
     hud_boot_anim();            // secuencia de arranque
@@ -130,6 +133,8 @@ void app_main(void)
         else if (!ahora && tocado) hud_touch_up(x, y);
         tocado = ahora;
 
+        // Barato: por dentro solo muestrea el ADC cada 2 s.
+        bateria_actualiza();
         hud_render();
         vTaskDelay(pdMS_TO_TICKS(33));      // ~30 FPS
     }

@@ -27,6 +27,46 @@ Si no sabes algo y no hay herramienta para averiguarlo, dilo claramente.
 No uses emojis ni markdown: se van a pronunciar."""
 
 
+def _prompt_desde_ajustes(datos: dict) -> tuple[str, list | None]:
+    """Traduce el bloque 'ajustes' de config.yaml (el que escribe el panel web)
+    a lo que el agente realmente usa: prompt de sistema y filtro de herramientas.
+
+    Sin esto, la ciudad del clima y los agentes del panel eran solo texto
+    guardado en un YAML que nadie leia.
+
+    Devuelve (prompt_sistema, mcp_permitidos_o_None).
+    """
+    aj = (datos or {}).get("ajustes") or {}
+    partes = [SISTEMA]
+
+    ciudad = ((aj.get("clima") or {}).get("ciudad") or "").strip()
+    if ciudad:
+        partes.append(
+            f"\nLa ubicacion por defecto de Mario es {ciudad}. Cuando pregunte "
+            f"por el clima sin decir donde, usa esa ciudad: resuelve primero sus "
+            f"coordenadas con clima_ubicacion y luego consulta clima_actual. No "
+            f"le preguntes la ciudad si no ha cambiado de sitio.")
+
+    nombre = ((aj.get("apariencia") or {}).get("nombre_asistente") or "").strip()
+    if nombre and nombre.lower() not in ("asistente esp32", ""):
+        partes.append(f"\nTe llamas {nombre}. Si te preguntan tu nombre, ese es.")
+
+    # Perfil de agente activo: el primero con nombre. Sus instrucciones se
+    # anaden al sistema y su lista de MCP acota las herramientas visibles.
+    permitidos = None
+    for a in (aj.get("agentes") or []):
+        if not isinstance(a, dict) or not (a.get("nombre") or "").strip():
+            continue
+        instr = (a.get("instrucciones") or "").strip()
+        if instr:
+            partes.append(f"\nInstrucciones adicionales ({a['nombre']}):\n{instr}")
+        if a.get("mcp"):
+            permitidos = [str(x).strip() for x in a["mcp"] if str(x).strip()]
+        break
+
+    return "\n".join(partes), permitidos
+
+
 @dataclass
 class Agente:
     config: Config = None
@@ -48,8 +88,15 @@ class Agente:
     # ------------------------------------------------------------
     async def chat(self, mensaje_usuario: str) -> str:
         self.historial.append({"role": "user", "content": mensaje_usuario})
-        mensajes = [{"role": "system", "content": SISTEMA}] + self.historial[-12:]
-        herramientas = self.mcp_pool.esquemas() if self.mcp_pool else []
+        # El prompt se recalcula en cada turno a proposito: asi un cambio
+        # guardado desde el panel web (ciudad del clima, nombre, perfil de
+        # agente) entra en el siguiente mensaje sin reiniciar el bridge.
+        if self.config:
+            self.config.recarga_si_cambio()
+        sistema, permitidos = _prompt_desde_ajustes(
+            self.config.data if self.config else {})
+        mensajes = [{"role": "system", "content": sistema}] + self.historial[-12:]
+        herramientas = self.mcp_pool.esquemas(permitidos) if self.mcp_pool else []
 
         for vuelta in range(MAX_VUELTAS):
             t0 = time.time()

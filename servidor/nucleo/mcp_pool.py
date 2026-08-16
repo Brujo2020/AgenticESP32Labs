@@ -85,9 +85,18 @@ class MCPPool:
             }
         log.info("MCP '%s' listo", nombre)
 
-    def esquemas(self) -> list[dict]:
-        """Herramientas en el formato que espera la API de OpenAI."""
-        return [h["esquema"] for h in self.herramientas.values()]
+    def esquemas(self, servidores: list[str] | None = None) -> list[dict]:
+        """Herramientas en el formato que espera la API de OpenAI.
+
+        'servidores' acota a los MCP indicados: es como un perfil de agente
+        del panel web limita lo que ese agente puede tocar. None = todas.
+        Un servidor que no exista se ignora en silencio (no rompe el chat).
+        """
+        if servidores is None:
+            return [h["esquema"] for h in self.herramientas.values()]
+        permitidos = set(servidores)
+        return [h["esquema"] for h in self.herramientas.values()
+                if h["servidor"] in permitidos]
 
     def list_available_tools(self) -> list[str]:
         """Nombres de las herramientas conectadas ahora mismo (usado por consola.py)."""

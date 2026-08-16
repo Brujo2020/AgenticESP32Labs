@@ -134,9 +134,16 @@ def _en_lineas(texto: str, ancho: int) -> list[str]:
 
 
 async def envia_noticias(ws):
-    """Refresca titulares al conectar y luego cada 15 minutos."""
+    """Refresca titulares al conectar y luego cada 15 minutos.
+
+    Si la pantalla de noticias esta apagada en el panel, ni se piden los RSS:
+    no tiene sentido gastar red y CPU en algo que el usuario no puede ver.
+    """
     while True:
         try:
+            if not pantalla_activa("noticias"):
+                await asyncio.sleep(60)
+                continue
             ts = await titulares(5)
             if ts:
                 await envia(ws, "noticias_reset", "")
@@ -149,18 +156,24 @@ async def envia_noticias(ws):
 
 
 async def envia_telemetria(ws):
-    """Estado del Mac y de las apps creativas, cada 5 s."""
+    """Estado del Mac y de las apps creativas, cada 5 s.
+
+    Cada feed se salta si su pantalla esta apagada en el panel: son consultas
+    al sistema cada 5 segundos, no vale la pena hacerlas a ciegas.
+    """
     while True:
         try:
-            mac = await asyncio.to_thread(lineas_mac)
-            await envia(ws, "mac_reset", "")
-            for l in mac:
-                await envia(ws, "mac", l)
+            if pantalla_activa("mac"):
+                mac = await asyncio.to_thread(lineas_mac)
+                await envia(ws, "mac_reset", "")
+                for l in mac:
+                    await envia(ws, "mac", l)
 
-            cre = await asyncio.to_thread(lineas_creativo)
-            await envia(ws, "creativo_reset", "")
-            for l in cre:
-                await envia(ws, "creativo", l)
+            if pantalla_activa("creativo"):
+                cre = await asyncio.to_thread(lineas_creativo)
+                await envia(ws, "creativo_reset", "")
+                for l in cre:
+                    await envia(ws, "creativo", l)
         except Exception as e:
             log.warning("telemetria: %s", e)
         await asyncio.sleep(5)
@@ -168,6 +181,36 @@ async def envia_telemetria(ws):
 
 async def envia(ws, tipo, valor):
     await ws.send(json.dumps({"t": tipo, "v": valor}))
+
+
+def ajustes_actuales() -> dict:
+    """Bloque 'ajustes' de config.yaml, releido si el panel lo cambio.
+
+    El panel web corre en otro proceso y escribe el mismo fichero; sin
+    releer, un toggle del panel no se notaria hasta reiniciar el bridge.
+    """
+    if agente and agente.config:
+        agente.config.recarga_si_cambio()
+        return (agente.config.data or {}).get("ajustes") or {}
+    return {}
+
+
+def debe_hablar() -> bool:
+    """Toggle 'Leer respuestas del agente en voz alta' del panel."""
+    aj = ajustes_actuales()
+    return bool(aj.get("tts_leer_respuestas", True))
+
+
+def pantalla_activa(id_pantalla: str) -> bool:
+    """¿Esa pantalla del carrusel esta encendida en el panel?
+
+    Ante la duda (sin ajustes guardados todavia) se asume que si: el
+    comportamiento por defecto tiene que ser el de siempre.
+    """
+    for p in (ajustes_actuales().get("pantallas") or []):
+        if isinstance(p, dict) and p.get("id") == id_pantalla:
+            return bool(p.get("activa", True))
+    return True
 
 
 async def atiende_control(ws):
@@ -232,6 +275,8 @@ async def atiende_control(ws):
                 elif fn == "configurar":
                     v = await CANAL.configurar(args.get("brillo"), args.get("volumen"),
                                                args.get("tema_hud"), args.get("efectos"))
+                elif fn == "pantallas":
+                    v = await CANAL.pantallas(args.get("activas"), args.get("orden"))
                 elif fn == "reiniciar":
                     v = await CANAL.reiniciar()
                 else:
@@ -326,13 +371,18 @@ async def atiende(ws):
                 respuesta = await agente.chat(texto)
                 log.info("respuesta: %s", respuesta)
 
-                await envia(ws, "estado", "speaking")
                 await envia(ws, "texto", respuesta[:40].upper())
                 for trozo in _en_lineas(respuesta, 33)[:3]:
                     await envia(ws, "ia", trozo)
-                audio = await asyncio.to_thread(sintetiza, respuesta)
-                for i in range(0, len(audio), 2048):
-                    await ws.send(audio[i:i + 2048])
+
+                # Con la lectura por voz apagada en el panel, la respuesta se
+                # muestra en pantalla y ya: ni se sintetiza (no se gasta cuota
+                # de TTS) ni se pone el HUD en "speaking", que seria mentira.
+                if debe_hablar():
+                    await envia(ws, "estado", "speaking")
+                    audio = await asyncio.to_thread(sintetiza, respuesta)
+                    for i in range(0, len(audio), 2048):
+                        await ws.send(audio[i:i + 2048])
                 await envia(ws, "estado", "idle")
 
     except websockets.ConnectionClosed:

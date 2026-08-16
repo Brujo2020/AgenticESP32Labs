@@ -9,6 +9,7 @@
 #include "net.h"
 #include "voice.h"
 #include "ajustes.h"
+#include "bateria.h"
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
@@ -95,15 +96,52 @@ static int ancho_seguro(int y, int x0)
     return n < 0 ? 0 : n;
 }
 
-// Pinta recortando, en vez de dejar que el texto se salga o pise el boton
+// Pinta recortando, en vez de dejar que el texto se salga o pise el boton.
+//
+// Si la linea NO cabe, se desplaza sola en bucle (marquesina) en vez de
+// quedarse cortada para siempre: un titular de noticias o una respuesta larga
+// del agente eran ilegibles a partir del caracter 26. El desplazamiento se
+// calcula por fotograma global (s_t), asi que todas las filas van
+// sincronizadas y el conjunto no parece un caos de textos moviendose.
+//
+// Ritmo: ~4 fotogramas por caracter (a 30 fps, unos 7 caracteres/segundo,
+// que es velocidad de lectura comoda) y una pausa al principio y al final
+// para poder leer el arranque sin perseguirlo.
+#define MARQ_FRAMES_CAR  4
+#define MARQ_PAUSA       18      // fotogramas quieto en cada extremo
+
 static void texto_recortado(int x, int y, const char *t, uint16_t c)
 {
-    char buf[40];
+    char buf[64];
     int n = ancho_seguro(y, x);
-    if (n <= 0) return;
+    if (n <= 0 || !t) return;
     if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
-    snprintf(buf, n + 1, "%s", t);
+
+    int largo = (int)strlen(t);
+    int sobra = largo - n;
+    if (sobra <= 0) {                       // cabe entero: nada que animar
+        snprintf(buf, n + 1, "%s", t);
+        display_text(x, y, buf, c, 1);
+        return;
+    }
+
+    // Ciclo: pausa + recorrido + pausa, y vuelta a empezar.
+    int recorrido = sobra * MARQ_FRAMES_CAR;
+    int ciclo = recorrido + MARQ_PAUSA * 2;
+    int f = s_t % ciclo;
+    int desde;
+    if (f < MARQ_PAUSA)                     desde = 0;
+    else if (f < MARQ_PAUSA + recorrido)    desde = (f - MARQ_PAUSA) / MARQ_FRAMES_CAR;
+    else                                    desde = sobra;
+    if (desde > sobra) desde = sobra;
+
+    snprintf(buf, n + 1, "%s", t + desde);
     display_text(x, y, buf, c, 1);
+
+    // Marca de continuacion mientras quede texto a la derecha: sin ella no
+    // se distingue "esto sigue" de "esto acaba justo aqui".
+    if (desde < sobra)
+        display_px(x + n * 6 - 1, y + 3, display_escala(c, 160));
 }
 
 static const char *NOMBRES_FIJAS[SCR_VISTA0] = {
@@ -122,8 +160,49 @@ static bool es_vista_slot(hud_screen_t s) { return s >= SCR_VISTA0 && s <= SCR_V
 
 static bool pantalla_existe(hud_screen_t s)
 {
-    if (!es_vista_slot(s)) return true;
+    // Las fijas ahora pueden apagarse desde el panel web (ajustes.mascara).
+    // AJUSTES es la excepcion deliberada: si se pudiera ocultar, y ademas se
+    // ocultara todo lo demas, el usuario se quedaria sin forma de recuperar
+    // el HUD desde el propio dispositivo. Siempre queda una puerta.
+    if (!es_vista_slot(s))
+        return (s == SCR_AJUSTES) || ajustes_pantalla_visible((int)s);
     return (s - SCR_VISTA0) < voice_vistas_num();
+}
+
+// Orden de recorrido del carrusel. Las fijas se ordenan por ajustes.orden;
+// los slots de vista v2 van siempre despues, en su orden de llegada, para
+// que reordenar las fijas no mueva lo que un agente acaba de publicar.
+static int pos_carrusel(hud_screen_t s)
+{
+    if (es_vista_slot(s)) return 100 + (int)(s - SCR_VISTA0);
+    return ajustes_pantalla_pos((int)s);
+}
+
+// Vecina en el carrusel siguiendo el orden configurado. 'paso' es +1 o -1.
+// Si no hay ninguna por delante, da la vuelta al extremo opuesto.
+static hud_screen_t vecina(hud_screen_t desde, int paso)
+{
+    int mejor = -1, mejor_pos = 0;
+    int pos_actual = pos_carrusel(desde);
+    int extremo = -1, extremo_pos = 0;
+
+    for (int s = 0; s < SCR_TOTAL; s++) {
+        if (s == (int)desde) continue;
+        if (!pantalla_existe((hud_screen_t)s)) continue;
+        int p = pos_carrusel((hud_screen_t)s);
+
+        if (extremo < 0 || (paso > 0 ? p < extremo_pos : p > extremo_pos)) {
+            extremo = s; extremo_pos = p;
+        }
+        bool en_direccion = (paso > 0) ? (p > pos_actual) : (p < pos_actual);
+        if (!en_direccion) continue;
+        if (mejor < 0 || (paso > 0 ? p < mejor_pos : p > mejor_pos)) {
+            mejor = s; mejor_pos = p;
+        }
+    }
+    if (mejor  >= 0) return (hud_screen_t)mejor;
+    if (extremo >= 0) return (hud_screen_t)extremo;
+    return desde;    // era la unica visible
 }
 
 static const char *nombre_pantalla(hud_screen_t s)
@@ -145,7 +224,13 @@ static uint16_t color_por_nombre(const char *n)
     return C_WHITE;    // "white" y cualquier valor desconocido: nunca un color al azar
 }
 
-void hud_init(void) { s_scr = SCR_NUCLEO; s_state = ST_IDLE; }
+void hud_init(void)
+{
+    // NUCLEO puede estar oculta desde el panel: arrancar en una pantalla que
+    // no existe dejaria el HUD en negro hasta el primer toque.
+    s_scr = pantalla_existe(SCR_NUCLEO) ? SCR_NUCLEO : vecina(SCR_NUCLEO, +1);
+    s_state = ST_IDLE;
+}
 void hud_set_state(hud_state_t s) { s_state = s; }
 hud_state_t hud_get_state(void) { return s_state; }
 hud_screen_t hud_screen(void) { return s_scr; }
@@ -153,20 +238,12 @@ bool hud_en_ajustes(void) { return s_scr == SCR_AJUSTES; }
 
 void hud_next_screen(void)
 {
-    hud_screen_t s = s_scr;
-    for (int i = 0; i < SCR_TOTAL; i++) {
-        s = (s + 1) % SCR_TOTAL;
-        if (pantalla_existe(s)) { s_scr = s; break; }
-    }
+    s_scr = vecina(s_scr, +1);
     s_trans = 8;
 }
 static void hud_prev_screen(void)
 {
-    hud_screen_t s = s_scr;
-    for (int i = 0; i < SCR_TOTAL; i++) {
-        s = (s + SCR_TOTAL - 1) % SCR_TOTAL;
-        if (pantalla_existe(s)) { s_scr = s; break; }
-    }
+    s_scr = vecina(s_scr, -1);
     s_trans = 8;
 }
 bool hud_hablando(void) { return s_hablando; }
@@ -195,7 +272,7 @@ void hud_ajuste_incrementa(void)
     switch (s_sel) {
         case 0: a->brillo  = (a->brillo  >= 100) ? 20 : a->brillo  + 20; break;
         case 1: a->volumen = (a->volumen >= 100) ? 0  : a->volumen + 20; break;
-        case 2: a->tema    = (a->tema + 1) % 4;                          break;
+        case 2: a->tema    = (a->tema + 1) % 8;                          break;
         case 3: a->scanlines = !a->scanlines;                            break;
         case 4: a->rejilla   = !a->rejilla;                              break;
     }
@@ -256,6 +333,43 @@ static uint16_t color_estado(void)
     }
 }
 
+// Bateria SIEMPRE visible, en cualquier pantalla: pila pequena arriba a la
+// derecha con el porcentaje. Va dentro del circulo util (r=118) para que no
+// se coma el borde en la pantalla redonda.
+//
+// Color por carga, no decorativo: verde normal, ambar por debajo de 30,
+// rojo por debajo de 15. Cargando pulsa en cian, que se distingue de un
+// vompletamente cargado sin tener que leer el numero.
+static void pinta_bateria(void)
+{
+    if (!bateria_disponible()) return;
+    int pct = bateria_pct();
+    if (pct < 0) return;
+
+    const int x = 158, y = 30, an = 22, al = 11;   // cuerpo de la pila
+    bool cargando = bateria_cargando();
+
+    uint16_t col = (pct <= 15) ? C_BLOOD : (pct <= 30) ? C_AMBER : C_LIME;
+    if (cargando) {
+        // Parpadeo lento mientras carga: se ve "vivo" sin ser molesto.
+        col = display_escala(C_CYAN, (s_t % 60 < 30) ? 255 : 120);
+    }
+
+    display_rect(x, y, an, al, col);                          // carcasa
+    for (int i = 0; i < 2; i++)                                // borne
+        display_line(x + an + i, y + 3, x + an + i, y + al - 4, col);
+
+    // Relleno proporcional. No hay primitiva de rectangulo macizo en
+    // display.h, asi que se pinta con lineas horizontales: son 7 como mucho.
+    int relleno = (an - 4) * pct / 100;
+    for (int i = 0; i < relleno; i++)
+        display_line(x + 2 + i, y + 2, x + 2 + i, y + al - 3, col);
+
+    char t[8];
+    snprintf(t, sizeof(t), "%d", pct);
+    display_text(x - 6 - (int)strlen(t) * 6, y + 2, t, col, 1);
+}
+
 static void marco(void)
 {
     uint16_t ac = ajustes_acento();
@@ -293,6 +407,9 @@ static void marco(void)
         if (i == actual) display_fill_circle(x, 224, 2, ac);
         else display_px(x, 224, display_escala(ac, 130));
     }
+
+    // Ultimo, para que quede por encima del aro y no lo tape nada del marco.
+    pinta_bateria();
 }
 
 // ============================================================

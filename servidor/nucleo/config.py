@@ -6,13 +6,39 @@ from typing import Any, Dict, Optional
 class Config:
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = Path(config_path)
+        self._mtime = 0.0
         self.data = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():
             raise FileNotFoundError(f"Config: {self.config_path}")
+        self._mtime = self.config_path.stat().st_mtime
         with open(self.config_path, "r") as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
+
+    def recarga_si_cambio(self) -> bool:
+        """Relee config.yaml si el fichero cambio en disco.
+
+        El panel web (panel_api.py) corre en OTRO proceso y escribe este mismo
+        fichero. Sin esto, cambiar la ciudad del clima o un perfil de agente
+        desde el panel no tenia ningun efecto hasta reiniciar el bridge de voz
+        -- que es exactamente lo que el panel promete evitar.
+
+        Si el YAML queda a medio escribir en el instante de la lectura, se
+        conserva el anterior: mejor config vieja que un agente sin config.
+        """
+        try:
+            m = self.config_path.stat().st_mtime
+        except OSError:
+            return False
+        if m <= self._mtime:
+            return False
+        try:
+            self.data = self._load_config()
+            return True
+        except Exception:
+            self._mtime = m      # no reintentar en bucle sobre un fichero roto
+            return False
 
     def get_model_config(self, model_name: str) -> Dict[str, Any]:
         models = self.data.get("llm_models", {})

@@ -269,6 +269,54 @@ class Canal:
         await self._envia(cuerpo)
         return f"Ajustes enviados al ESP32: {cuerpo}"
 
+    # Pantallas fijas del carrusel, en el mismo orden que hud_screen_t
+    # (components/hud/include/hud.h) y NOMBRES_FIJAS en hud.c. El indice ES
+    # el contrato con el firmware: reordenar esta lista sin tocar el C
+    # rompe la correspondencia.
+    PANTALLAS = ["nucleo", "reloj", "clima", "voz", "chat",
+                 "noticias", "mac", "creativo", "ajustes", "sistema"]
+
+    async def pantallas(self, activas: list, orden: list = None) -> str:
+        """Configura que pantallas fijas se ven en el carrusel y en que orden.
+
+        'activas' y 'orden' aceptan nombres (de PANTALLAS) o indices. Se
+        persiste en la NVS del ESP32: sobrevive al reinicio del dispositivo.
+        """
+        if not self.v2:
+            return ("Este firmware no anuncio protocolo v2: no puede recibir "
+                    "la configuracion del carrusel. Actualiza el firmware.")
+
+        def a_indice(x):
+            if isinstance(x, int):
+                return x if 0 <= x < len(self.PANTALLAS) else None
+            n = str(x).strip().lower()
+            return self.PANTALLAS.index(n) if n in self.PANTALLAS else None
+
+        idx_activas = [i for i in (a_indice(x) for x in (activas or [])) if i is not None]
+        if not idx_activas:
+            return ("No se puede dejar el carrusel vacio: manda al menos una "
+                    f"pantalla. Validas: {', '.join(self.PANTALLAS)}")
+        # 'ajustes' siempre se manda activa: es la puerta de vuelta desde el
+        # propio dispositivo si alguien se deja fuera todo lo demas. El
+        # firmware la protege igual, pero mejor no mentirle al usuario sobre
+        # lo que se guardo.
+        i_ajustes = self.PANTALLAS.index("ajustes")
+        if i_ajustes not in idx_activas:
+            idx_activas.append(i_ajustes)
+
+        cuerpo = {"t": "pantallas", "activas": sorted(set(idx_activas))}
+        if orden:
+            idx_orden = [i for i in (a_indice(x) for x in orden) if i is not None]
+            vistos, limpio = set(), []
+            for i in idx_orden:
+                if i not in vistos:
+                    vistos.add(i)
+                    limpio.append(i)
+            cuerpo["orden"] = limpio
+        await self._envia(cuerpo)
+        nombres = [self.PANTALLAS[i] for i in cuerpo["activas"]]
+        return f"Carrusel actualizado. Visibles: {', '.join(nombres)}."
+
     async def reiniciar(self) -> str:
         """Reinicia el ESP32 (esp_restart). Irreversible en el sentido de que
         corta la sesion de voz en curso -- usar con cuidado, avisar antes."""

@@ -351,6 +351,44 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                     ajustes_guardar();
                     ESP_LOGI(TAG, "config remota aplicada: brillo=%d volumen=%d tema=%d efectos=%d",
                              a->brillo, a->volumen, a->tema, a->efectos);
+                } else if (!strcmp(tipo, "pantallas")) {
+                    // Carrusel configurado desde el panel web:
+                    //   {"t":"pantallas","activas":[0,1,3,...],"orden":[...]}
+                    // 'activas' son los indices de pantalla fija visibles;
+                    // 'orden' la secuencia de recorrido. Se persiste en NVS,
+                    // asi que sobrevive al reinicio del ESP32.
+                    ajustes_t *a = ajustes();
+                    cJSON *act = cJSON_GetObjectItem(j, "activas");
+                    cJSON *ord = cJSON_GetObjectItem(j, "orden");
+                    if (cJSON_IsArray(act)) {
+                        unsigned short m = 0;
+                        cJSON *it = NULL;
+                        cJSON_ArrayForEach(it, act) {
+                            if (cJSON_IsNumber(it) && it->valueint >= 0 &&
+                                it->valueint < AJ_PANTALLAS_FIJAS)
+                                m |= (unsigned short)(1u << it->valueint);
+                        }
+                        a->mascara = m;
+                    }
+                    if (cJSON_IsArray(ord)) {
+                        signed char nuevo[AJ_PANTALLAS_FIJAS];
+                        bool visto[AJ_PANTALLAS_FIJAS] = {0};
+                        int n = 0;
+                        cJSON *it = NULL;
+                        cJSON_ArrayForEach(it, ord) {
+                            int v = cJSON_IsNumber(it) ? it->valueint : -1;
+                            if (v < 0 || v >= AJ_PANTALLAS_FIJAS || visto[v]) continue;
+                            visto[v] = true;
+                            nuevo[n++] = (signed char)v;
+                        }
+                        // Lo que el panel no haya listado se conserva al final:
+                        // un orden parcial no puede hacer desaparecer pantallas.
+                        for (int v = 0; v < AJ_PANTALLAS_FIJAS && n < AJ_PANTALLAS_FIJAS; v++)
+                            if (!visto[v]) nuevo[n++] = (signed char)v;
+                        memcpy(a->orden, nuevo, sizeof(a->orden));
+                    }
+                    ajustes_guardar();
+                    ESP_LOGI(TAG, "carrusel actualizado: mascara=0x%03X", a->mascara);
                 } else if (!strcmp(tipo, "reiniciar")) {
                     ESP_LOGW(TAG, "reinicio remoto pedido desde el panel");
                     cJSON_Delete(j);

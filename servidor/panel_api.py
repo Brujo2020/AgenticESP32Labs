@@ -287,17 +287,21 @@ AJUSTES_DEFAULT = {
         "logo": "", "fondo": "", "nombre_asistente": "Asistente ESP32",
     },
     "dispositivo": {"brillo": 80, "volumen": 70, "tema_hud": "cyan", "efectos": True},
+    # Los 'id' y su ORDEN son el contrato con el firmware: el indice de cada
+    # entrada aqui es el valor de hud_screen_t en components/hud/include/hud.h
+    # (y de Canal.PANTALLAS). El campo 'nombre' es solo etiqueta para el panel;
+    # 'titulo_hud' es lo que el propio dispositivo pinta en la cabecera.
     "pantallas": [
-        {"id": "nucleo", "nombre": "Núcleo", "activa": True, "orden": 1},
-        {"id": "reloj", "nombre": "Reloj", "activa": True, "orden": 2},
-        {"id": "clima", "nombre": "Clima", "activa": True, "orden": 3},
-        {"id": "voz", "nombre": "Voz", "activa": True, "orden": 4},
-        {"id": "conversacion", "nombre": "Conversación", "activa": True, "orden": 5},
-        {"id": "noticias", "nombre": "Noticias IA", "activa": True, "orden": 6},
-        {"id": "telemetria", "nombre": "Telemetría Mac", "activa": True, "orden": 7},
-        {"id": "unity_blender", "nombre": "Unity/Blender", "activa": True, "orden": 8},
-        {"id": "ajustes", "nombre": "Ajustes", "activa": True, "orden": 9},
-        {"id": "diagnostico", "nombre": "Diagnóstico", "activa": True, "orden": 10},
+        {"id": "nucleo",   "nombre": "Núcleo",         "titulo_hud": "NUCLEO",   "activa": True, "orden": 0},
+        {"id": "reloj",    "nombre": "Reloj",          "titulo_hud": "CRONO",    "activa": True, "orden": 1},
+        {"id": "clima",    "nombre": "Clima",          "titulo_hud": "ATMOS",    "activa": True, "orden": 2},
+        {"id": "voz",      "nombre": "Voz",            "titulo_hud": "VOZ",      "activa": True, "orden": 3},
+        {"id": "chat",     "nombre": "Conversación",   "titulo_hud": "REGISTRO", "activa": True, "orden": 4},
+        {"id": "noticias", "nombre": "Noticias IA",    "titulo_hud": "SENALES",  "activa": True, "orden": 5},
+        {"id": "mac",      "nombre": "Telemetría Mac", "titulo_hud": "MAQUINA",  "activa": True, "orden": 6},
+        {"id": "creativo", "nombre": "Unity/Blender",  "titulo_hud": "FORJA",    "activa": True, "orden": 7},
+        {"id": "ajustes",  "nombre": "Ajustes",        "titulo_hud": "AJUSTES",  "activa": True, "orden": 8},
+        {"id": "sistema",  "nombre": "Diagnóstico",    "titulo_hud": "DIAG",     "activa": True, "orden": 9},
     ],
     "clima": {"proveedor": "open-meteo", "ciudad": "", "leer_tts": False},
     "noticias": {"fuente": "hnrss+techcrunch+ainews", "leer_tts": True},
@@ -404,6 +408,27 @@ async def dispositivo_aplicar(body: DispositivoConfigIn):
     actuales = _lee_ajustes()
     actuales["dispositivo"].update(args)
     _guarda_ajustes(actuales)
+    return {"ok": True, "resultado": v}
+
+
+@app.post("/api/dispositivo/pantallas", dependencies=router_dep)
+async def dispositivo_pantallas():
+    """Empuja al ESP32 el carrusel guardado en ajustes.pantallas.
+
+    Se lee de config.yaml en vez de recibirlo en el cuerpo a proposito: el
+    panel guarda primero (PUT /api/ajustes) y luego pide aplicar, asi que lo
+    que llega al dispositivo es siempre lo que quedo persistido -- no hay
+    forma de que la pantalla muestre una cosa y el ESP32 tenga otra.
+    """
+    pantallas = _lee_ajustes()["pantallas"]
+    en_orden = sorted(pantallas, key=lambda p: p.get("orden", 99))
+    activas = [p["id"] for p in en_orden if p.get("activa")]
+    orden = [p["id"] for p in en_orden]
+    if not activas:
+        raise HTTPException(400, "no puedes dejar el carrusel sin ninguna pantalla")
+    v = await _control_llama("pantallas", {"activas": activas, "orden": orden})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
     return {"ok": True, "resultado": v}
 
 

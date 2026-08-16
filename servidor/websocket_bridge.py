@@ -229,6 +229,11 @@ async def atiende_control(ws):
                     v = f"Dicho en voz alta: {texto}"
                 elif fn == "estado":
                     v = CANAL.snapshot()
+                elif fn == "configurar":
+                    v = await CANAL.configurar(args.get("brillo"), args.get("volumen"),
+                                               args.get("tema_hud"), args.get("efectos"))
+                elif fn == "reiniciar":
+                    v = await CANAL.reiniciar()
                 else:
                     v = {"error": f"comando desconocido '{fn}'"}
             except Rechazo as e:

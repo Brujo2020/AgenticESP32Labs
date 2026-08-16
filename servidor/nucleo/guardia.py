@@ -35,7 +35,10 @@ ACENTOS = {"cyan", "magenta", "lime", "amber", "ice", "blood", "grey", "white"}
 NIVELES = {"info", "ok", "warn", "error"}
 
 # Capacidades. Un agente no necesita todas: se le concede el minimo.
-CAPACIDADES = {"ver", "avisar", "hablar", "preguntar", "estado"}
+# 'administrar' es aparte de 'ver'/'avisar': toca hardware (brillo, volumen,
+# reinicio) en vez de solo pintar en pantalla -- que algo pueda mostrar texto
+# no significa que deba poder reiniciar el dispositivo.
+CAPACIDADES = {"ver", "avisar", "hablar", "preguntar", "estado", "administrar"}
 
 # Que capacidad exige cada comando
 EXIGE = {
@@ -47,11 +50,15 @@ EXIGE = {
     "pregunta_async": "preguntar",
     "consulta": "estado",
     "estado":   "estado",
+    "configurar": "administrar",
+    "reiniciar":  "administrar",
 }
 
 # Limites de tasa por comando: (llamadas, ventana en segundos).
 # 'hablar' es el mas restringido: es el unico que produce ruido fisico en la
 # habitacion y por tanto el mas molesto si un agente entra en bucle.
+# 'reiniciar' a 2 cada 5 minutos: es destructivo para la sesion de voz en
+# curso, no hay razon legitima para pedirlo en bucle.
 LIMITES = {
     "mostrar":  (30, 60),
     "borrar":   (30, 60),
@@ -61,6 +68,8 @@ LIMITES = {
     "pregunta_async": (6, 60),
     "consulta": (120, 60),
     "estado":   (60, 60),
+    "configurar": (20, 60),
+    "reiniciar":  (2, 300),
 }
 
 
@@ -238,6 +247,24 @@ class Guardia:
                     "opciones": [self._texto(o, "opcion", 10).upper() for o in ops],
                     "timeout": self._entero(a.get("timeout"), "timeout", 5, 300, 30),
                     "__dry_run__": seco}
+
+        if cmd == "configurar":
+            out = {"__dry_run__": seco}
+            if a.get("brillo") is not None:
+                out["brillo"] = self._entero(a.get("brillo"), "brillo", 0, 100, 80)
+            if a.get("volumen") is not None:
+                out["volumen"] = self._entero(a.get("volumen"), "volumen", 0, 100, 70)
+            if a.get("tema_hud") is not None:
+                tema = a.get("tema_hud")
+                if tema not in ACENTOS:
+                    raise Rechazo(f"tema_hud '{tema}' no existe. Validos: {sorted(ACENTOS)}.")
+                out["tema_hud"] = tema
+            if a.get("efectos") is not None:
+                out["efectos"] = bool(a.get("efectos"))
+            return out
+
+        if cmd == "reiniciar":
+            return {"__dry_run__": seco}
 
         return {"__dry_run__": seco}
 

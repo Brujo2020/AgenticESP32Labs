@@ -226,6 +226,36 @@ async def hablar(texto: str) -> str:
 
 
 @mcp.tool()
+async def hud_configurar(brillo: int | None = None, volumen: int | None = None,
+                         tema_hud: str | None = None, efectos: bool | None = None) -> str:
+    """Cambia brillo, volumen, color de acento o efectos de sonido del ESP32.
+
+    Solo toca los campos que mandes; el resto queda igual. Se aplica en el
+    dispositivo al instante y queda guardado ahi (sobrevive a un reinicio).
+
+    Args:
+        brillo: 0-100.
+        volumen: 0-100.
+        tema_hud: cyan, magenta, lime, amber, ice, blood, grey o white.
+        efectos: True/False, pitidos de confirmacion y notificacion.
+    """
+    args = {k: v for k, v in {"brillo": brillo, "volumen": volumen,
+                              "tema_hud": tema_hud, "efectos": efectos}.items()
+            if v is not None}
+    return await _llama("configurar", args)
+
+
+@mcp.tool()
+async def hud_reiniciar() -> str:
+    """Reinicia el ESP32 (esp_restart). Corta la sesion de voz en curso.
+
+    Usa hud_preguntar antes de llamar a esto si no es evidente que el
+    humano lo quiere: un reinicio no es reversible ni silencioso.
+    """
+    return await _llama("reiniciar", {})
+
+
+@mcp.tool()
 async def dispositivo_estado() -> str:
     """Estado del ESP32: conexion, firmware, WiFi, memoria libre y vistas activas.
 

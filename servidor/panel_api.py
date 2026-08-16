@@ -15,6 +15,7 @@ descuido en una IP publica.
 """
 import asyncio
 import copy
+import json
 import os
 import re
 import secrets
@@ -22,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Union
 
+import websockets
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -346,6 +348,71 @@ def ajustes_put(body: AjustesIn):
     actuales[body.seccion] = body.valores
     _guarda_ajustes(actuales)
     return {"ok": True, "ajustes": actuales}
+
+
+# ================================================================
+#  Control en vivo del ESP32 — brillo, volumen, tema, efectos, reinicio.
+#
+#  panel_api.py corre como proceso APARTE del bridge de voz
+#  (websocket_bridge.py), asi que no comparte el objeto CANAL en memoria.
+#  Se conecta como cliente de control por websocket, igual que hace
+#  mcps/dispositivo.py -- mismo protocolo, misma guardia de permisos y
+#  limite de tasa (ver nucleo/guardia.py, capacidad 'administrar').
+#  Requiere firmware con el manejador de 'config'/'reiniciar' en
+#  components/voice/voice.c; con un firmware viejo el mensaje se ignora
+#  sin romper nada, pero tampoco aplica el cambio.
+# ================================================================
+HUD_BRIDGE_LOCAL = os.getenv("HUD_BRIDGE", "ws://127.0.0.1:8765")
+
+
+async def _control_llama(fn: str, args: dict, timeout: float = 8):
+    async def _hazlo():
+        async with websockets.connect(HUD_BRIDGE_LOCAL, open_timeout=5) as ws:
+            await ws.send(json.dumps({"t": "hola", "rol": "control"}))
+            await ws.send(json.dumps({"t": "cmd", "rid": 1, "fn": fn, "args": args}))
+            async for msg in ws:
+                if isinstance(msg, bytes):
+                    continue
+                d = json.loads(msg)
+                if d.get("t") == "res":
+                    return d.get("v")
+    try:
+        return await asyncio.wait_for(_hazlo(), timeout=timeout)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"no se pudo hablar con el bridge de voz ({HUD_BRIDGE_LOCAL}): {e}")
+
+
+class DispositivoConfigIn(BaseModel):
+    brillo: Optional[int] = None
+    volumen: Optional[int] = None
+    tema_hud: Optional[str] = None
+    efectos: Optional[bool] = None
+
+
+@app.post("/api/dispositivo/aplicar", dependencies=router_dep)
+async def dispositivo_aplicar(body: DispositivoConfigIn):
+    args = {k: v for k, v in body.dict().items() if v is not None}
+    if not args:
+        raise HTTPException(400, "nada que aplicar")
+    v = await _control_llama("configurar", args)
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    # Se guarda tambien en ajustes.dispositivo para que el panel recuerde
+    # lo ultimo pedido, independientemente de si el firmware lo aplico.
+    actuales = _lee_ajustes()
+    actuales["dispositivo"].update(args)
+    _guarda_ajustes(actuales)
+    return {"ok": True, "resultado": v}
+
+
+@app.post("/api/dispositivo/reiniciar", dependencies=router_dep)
+async def dispositivo_reiniciar():
+    v = await _control_llama("reiniciar", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return {"ok": True, "resultado": v}
 
 
 # ================================================================

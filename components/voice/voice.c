@@ -7,12 +7,14 @@
 #include "voice.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "ajustes.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "cJSON.h"
 
@@ -333,6 +335,27 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                     parsea_pregunta(j);
                 } else if (!strcmp(tipo, "notifica")) {
                     parsea_notifica(j);
+                } else if (!strcmp(tipo, "config")) {
+                    // Ajustes remotos desde el panel web (servidor/panel_web).
+                    // Campos opcionales: solo se toca lo que venga presente.
+                    ajustes_t *a = ajustes();
+                    cJSON *br = cJSON_GetObjectItem(j, "brillo");
+                    cJSON *vo = cJSON_GetObjectItem(j, "volumen");
+                    cJSON *te = cJSON_GetObjectItem(j, "tema");
+                    cJSON *ef = cJSON_GetObjectItem(j, "efectos");
+                    if (cJSON_IsNumber(br)) a->brillo  = br->valueint < 0 ? 0 : (br->valueint > 100 ? 100 : br->valueint);
+                    if (cJSON_IsNumber(vo)) a->volumen = vo->valueint < 0 ? 0 : (vo->valueint > 100 ? 100 : vo->valueint);
+                    if (cJSON_IsNumber(te)) a->tema    = te->valueint < 0 ? 0 : (te->valueint > 7 ? 7 : te->valueint);
+                    if (cJSON_IsBool(ef))   a->efectos = cJSON_IsTrue(ef);
+                    ajustes_aplicar();
+                    ajustes_guardar();
+                    ESP_LOGI(TAG, "config remota aplicada: brillo=%d volumen=%d tema=%d efectos=%d",
+                             a->brillo, a->volumen, a->tema, a->efectos);
+                } else if (!strcmp(tipo, "reiniciar")) {
+                    ESP_LOGW(TAG, "reinicio remoto pedido desde el panel");
+                    cJSON_Delete(j);
+                    vTaskDelay(pdMS_TO_TICKS(300));   // deja salir el log
+                    esp_restart();
                 } else {
                 cJSON *v = cJSON_GetObjectItem(j, "v");
                 if (cJSON_IsString(t) && cJSON_IsString(v)) {
@@ -430,5 +453,5 @@ void voice_talk_stop(void)
     // Sin esto no habia ninguna senal audible de que soltar el boton hizo
     // algo -- el usuario no sabe si el mensaje se mando o si el gesto fallo,
     // hasta que (si acaso) llega la respuesta varios segundos despues.
-    audio_beep(1200, 90);
+    if (ajustes()->efectos) audio_beep(1200, 90);
 }

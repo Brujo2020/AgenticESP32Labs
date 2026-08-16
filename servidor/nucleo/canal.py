@@ -39,6 +39,10 @@ LIMITES_V1 = {"vistas_max": 3, "filas_max": 5, "ancho": 33}
 ACENTOS = {"cyan", "magenta", "lime", "amber", "ice", "blood", "grey", "white"}
 NIVELES = {"info", "ok", "warn", "error"}
 
+# Mismo orden que ajustes_t.tema en components/ajustes/include/ajustes.h --
+# cambiar uno sin el otro desincroniza el panel del firmware.
+ACENTOS_ORDEN = ["cyan", "magenta", "lime", "amber", "ice", "blood", "grey", "white"]
+
 
 @dataclass
 class Canal:
@@ -239,6 +243,40 @@ class Canal:
              "indice": -1, "segundos": 0})
         self._pendientes.pop(qid, None)
         self._vence.pop(qid, None)
+
+    # ---------------- ajustes remotos ----------------
+    async def configurar(self, brillo: int = None, volumen: int = None,
+                         tema_hud: str = None, efectos: bool = None) -> str:
+        """Aplica brillo/volumen/tema/efectos en el ESP32 AHORA MISMO y los
+        deja persistidos en su NVS (el propio firmware los guarda al
+        recibir 'config'). Requiere firmware con el manejador de 'config'
+        en components/voice/voice.c -- si el dispositivo es viejo, el
+        mensaje simplemente no hace nada (se ignora, no rompe nada)."""
+        if not self.v2:
+            return ("Este firmware no anuncio protocolo v2 en el handshake: "
+                    "no puede recibir ajustes remotos. Actualiza el firmware.")
+        cuerpo = {"t": "config"}
+        if brillo is not None:
+            cuerpo["brillo"] = max(0, min(100, int(brillo)))
+        if volumen is not None:
+            cuerpo["volumen"] = max(0, min(100, int(volumen)))
+        if tema_hud is not None:
+            if tema_hud not in ACENTOS_ORDEN:
+                return f"tema_hud debe ser uno de: {', '.join(ACENTOS_ORDEN)}"
+            cuerpo["tema"] = ACENTOS_ORDEN.index(tema_hud)
+        if efectos is not None:
+            cuerpo["efectos"] = bool(efectos)
+        await self._envia(cuerpo)
+        return f"Ajustes enviados al ESP32: {cuerpo}"
+
+    async def reiniciar(self) -> str:
+        """Reinicia el ESP32 (esp_restart). Irreversible en el sentido de que
+        corta la sesion de voz en curso -- usar con cuidado, avisar antes."""
+        if not self.v2:
+            return ("Este firmware no anuncio protocolo v2: no tiene manejador "
+                    "de reinicio remoto. Actualiza el firmware.")
+        await self._envia({"t": "reiniciar"})
+        return "Orden de reinicio enviada. El ESP32 se reconectara solo en unos segundos."
 
     # ---------------- otros ----------------
     async def notifica(self, txt: str, nivel: str = "info", beep: bool = False) -> str:

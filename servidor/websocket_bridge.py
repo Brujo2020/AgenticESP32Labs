@@ -179,8 +179,21 @@ async def envia_telemetria(ws):
         await asyncio.sleep(5)
 
 
+async def envia_raw(ws, dato):
+    """Escribe en el socket serializando con el resto de productores.
+
+    Si el destino es el ESP32, se pasa por CANAL.send(), que tiene el lock.
+    Escribir directo aqui es lo que corrompia el stream cuando la telemetria
+    caia en mitad del envio del audio -- ver el comentario en Canal.send().
+    """
+    if ws is CANAL.ws:
+        await CANAL.send(dato)
+    else:
+        await ws.send(dato)      # canal de control: un solo productor
+
+
 async def envia(ws, tipo, valor):
-    await ws.send(json.dumps({"t": tipo, "v": valor}))
+    await envia_raw(ws, json.dumps({"t": tipo, "v": valor}))
 
 
 def ajustes_actuales() -> dict:
@@ -267,7 +280,7 @@ async def atiende_control(ws):
                     texto = args["texto"]
                     audio = await asyncio.to_thread(sintetiza, texto)
                     for i in range(0, len(audio), 2048):
-                        await CANAL.ws.send(audio[i:i + 2048])
+                        await CANAL.send(audio[i:i + 2048])
                     await envia(CANAL.ws, "texto", texto[:40].upper())
                     v = f"Dicho en voz alta: {texto}"
                 elif fn == "estado":
@@ -382,7 +395,7 @@ async def atiende(ws):
                     await envia(ws, "estado", "speaking")
                     audio = await asyncio.to_thread(sintetiza, respuesta)
                     for i in range(0, len(audio), 2048):
-                        await ws.send(audio[i:i + 2048])
+                        await envia_raw(ws, audio[i:i + 2048])
                 await envia(ws, "estado", "idle")
 
     except websockets.ConnectionClosed:

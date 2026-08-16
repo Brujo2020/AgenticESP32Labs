@@ -56,6 +56,8 @@ class Canal:
     _opciones: dict = field(default_factory=dict)     # qid -> etiquetas
     _qid: int = 0
     estado: dict = field(default_factory=dict)
+    # Serializa TODA escritura hacia el ESP32. Ver Canal.send().
+    _lock_envio: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # ---------------- conexion ----------------
     @property
@@ -88,10 +90,33 @@ class Canal:
                 self.limites[k] = data[k]
         log.info("handshake fw=%s limites=%s", self.fw, self.limites)
 
+    async def send(self, dato):
+        """UNICA puerta de escritura hacia el ESP32. Serializa con un lock.
+
+        Hace falta porque hay varios productores escribiendo a la vez sobre el
+        mismo socket: el bucle que atiende la voz (que manda el audio de la
+        respuesta troceado en decenas de frames seguidos), la tarea de
+        telemetria (cada 5 s), la de noticias, y los comandos que llegan por
+        el canal de control. 'websockets' NO admite escrituras concurrentes:
+        si una tarea escribe en mitad del envio de otra, los frames se
+        intercalan, el stream queda corrupto y el dispositivo cierra la
+        conexion.
+
+        El sintoma era exactamente ese: la primera respuesta se oia y a partir
+        de la segunda el ESP32 aparecia desconectado del puente. Con la
+        telemetria cada 5 segundos y una respuesta de audio que dura varios,
+        la colision estaba practicamente garantizada.
+        """
+        ws = self.ws
+        if ws is None:
+            raise RuntimeError("no hay dispositivo conectado")
+        async with self._lock_envio:
+            await ws.send(dato)
+
     async def _envia(self, obj: dict):
         if not self.ws:
             raise RuntimeError("no hay dispositivo conectado")
-        await self.ws.send(json.dumps(obj, ensure_ascii=False))
+        await self.send(json.dumps(obj, ensure_ascii=False))
 
     # ---------------- vistas ----------------
     def _fila(self, f) -> dict:

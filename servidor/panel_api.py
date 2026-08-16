@@ -14,11 +14,13 @@ puesto, el panel NO arranca -- mejor fallar alto que quedar abierto por
 descuido en una IP publica.
 """
 import asyncio
+import copy
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import yaml
 from fastapi import Depends, FastAPI, HTTPException, Header
@@ -262,6 +264,88 @@ def reiniciar_servicio_voz():
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"fallo al reiniciar: {e.stderr or e}")
     return {"ok": True}
+
+
+# ================================================================
+#  Ajustes generales del panel — apariencia, dispositivo, pantallas,
+#  clima/noticias y agentes. Guardado real en config.yaml bajo la clave
+#  'ajustes' (mismo patron que guarda_proveedores: se reescribe solo ese
+#  bloque para no perder los comentarios del resto del fichero).
+#
+#  OJO: 'dispositivo' y 'pantallas' guardan la INTENCION del usuario ya
+#  mismo, de verdad, en disco. Que el ESP32 la aplique (brillo, volumen,
+#  activar/desactivar una pantalla en caliente) depende de que el firmware
+#  entienda un mensaje nuevo por el protocolo v2 (ver nucleo/canal.py) --
+#  eso todavia no existe, asi que hoy actua como "se guarda para la
+#  proxima sincronizacion", no como control remoto instantaneo del hardware.
+# ================================================================
+AJUSTES_DEFAULT = {
+    "apariencia": {
+        "tema": "glass-dark", "acento": "#5ee6c9", "acento2": "#7aa2ff",
+        "logo": "", "fondo": "", "nombre_asistente": "Asistente ESP32",
+    },
+    "dispositivo": {"brillo": 80, "volumen": 70, "tema_hud": "cyan", "efectos": True},
+    "pantallas": [
+        {"id": "nucleo", "nombre": "Núcleo", "activa": True, "orden": 1},
+        {"id": "reloj", "nombre": "Reloj", "activa": True, "orden": 2},
+        {"id": "clima", "nombre": "Clima", "activa": True, "orden": 3},
+        {"id": "voz", "nombre": "Voz", "activa": True, "orden": 4},
+        {"id": "conversacion", "nombre": "Conversación", "activa": True, "orden": 5},
+        {"id": "noticias", "nombre": "Noticias IA", "activa": True, "orden": 6},
+        {"id": "telemetria", "nombre": "Telemetría Mac", "activa": True, "orden": 7},
+        {"id": "unity_blender", "nombre": "Unity/Blender", "activa": True, "orden": 8},
+        {"id": "ajustes", "nombre": "Ajustes", "activa": True, "orden": 9},
+        {"id": "diagnostico", "nombre": "Diagnóstico", "activa": True, "orden": 10},
+    ],
+    "clima": {"proveedor": "open-meteo", "ciudad": "", "leer_tts": False},
+    "noticias": {"fuente": "hnrss+techcrunch+ainews", "leer_tts": True},
+    "tts_leer_respuestas": True,
+    "agentes": [],
+}
+
+
+def _lee_ajustes() -> dict:
+    cfg = panel._config()
+    guardado = cfg.get("ajustes") or {}
+    base = copy.deepcopy(AJUSTES_DEFAULT)
+    out = {}
+    for k, v in base.items():
+        if k in guardado:
+            out[k] = {**v, **guardado[k]} if isinstance(v, dict) and isinstance(guardado[k], dict) else guardado[k]
+        else:
+            out[k] = v
+    return out
+
+
+def _guarda_ajustes(ajustes: dict):
+    ruta = panel.CONFIG_PATH
+    texto = ruta.read_text()
+    bloque = yaml.safe_dump({"ajustes": ajustes}, allow_unicode=True, sort_keys=False)
+    if re.search(r"\najustes:", texto):
+        texto = re.sub(r"\najustes:.*\Z", "\n" + bloque, texto, flags=re.S)
+    else:
+        texto = texto.rstrip("\n") + "\n\n" + bloque
+    ruta.write_text(texto)
+
+
+@app.get("/api/ajustes", dependencies=router_dep)
+def ajustes_get():
+    return _lee_ajustes()
+
+
+class AjustesIn(BaseModel):
+    seccion: str
+    valores: Union[dict, list]
+
+
+@app.put("/api/ajustes", dependencies=router_dep)
+def ajustes_put(body: AjustesIn):
+    actuales = _lee_ajustes()
+    if body.seccion not in actuales:
+        raise HTTPException(400, f"seccion desconocida: {body.seccion}")
+    actuales[body.seccion] = body.valores
+    _guarda_ajustes(actuales)
+    return {"ok": True, "ajustes": actuales}
 
 
 # ================================================================

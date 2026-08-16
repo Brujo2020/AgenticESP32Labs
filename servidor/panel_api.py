@@ -450,3 +450,21 @@ if WEB.exists():
     @app.get("/")
     def index():
         return FileResponse(WEB / "index.html")
+
+
+# El simulador de HUD que ya existe en tools/ es un puerto fiel de display.c
+# y hud.c: las 10 pantallas, el tactil real, los overlays de diagnostico y el
+# estado simulado completo. El panel lo EMBEBE en un iframe en vez de tener su
+# propia maqueta -- una segunda version del HUD acabaria divergiendo del
+# firmware, que es justo el problema que tools/simulador.html vino a resolver.
+#
+# Sin auth a proposito: es un HTML estatico sin datos ni acciones sobre el
+# dispositivo. El iframe del panel no puede mandarle cabeceras.
+SIMULADOR = AQUI.parent / "tools" / "simulador.html"
+
+
+@app.get("/simulador")
+def simulador():
+    if not SIMULADOR.exists():
+        raise HTTPException(404, f"no se encontro {SIMULADOR}")
+    return FileResponse(SIMULADOR)

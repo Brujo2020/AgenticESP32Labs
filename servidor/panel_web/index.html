@@ -280,30 +280,18 @@ input[type=color]{width:46px;height:36px;padding:3px;border-radius:var(--radio-x
 .arrastre{color:var(--tenue2);cursor:grab;padding:0 4px;font-size:15px}
 .pantalla-item.arrastrando{opacity:.35;transform:scale(.97)}
 
-/* ---------- simulador ---------- */
-.simulador-wrap{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
-.simulador{width:250px;height:250px;border-radius:50%;position:relative;flex-shrink:0;
-  background:radial-gradient(circle at 32% 26%, #10243f, #030812 74%);
-  border:8px solid rgba(10,22,44,.9);
-  box-shadow:0 0 0 2px var(--glass-b),0 0 60px rgba(56,189,248,.22),0 24px 60px rgba(0,0,0,.6),
-             inset 0 0 46px rgba(56,189,248,.12);
-  display:flex;align-items:center;justify-content:center;overflow:hidden}
-/* anillo exterior que gira: lo que una pantalla cuadrada no puede hacer */
-.simulador .anillo{position:absolute;inset:12px;border-radius:50%;
-  border:2px solid var(--sim-acento,#38bdf8);opacity:.5;
-  border-top-color:transparent;border-left-color:transparent;
-  animation:girar 5.5s linear infinite}
-.simulador .anillo2{position:absolute;inset:26px;border-radius:50%;
-  border:1px dashed var(--sim-acento,#38bdf8);opacity:.28;
-  animation:girar 9s linear infinite reverse}
-@keyframes girar{to{transform:rotate(360deg)}}
-.simulador .contenido{text-align:center;color:var(--sim-acento,#38bdf8);z-index:2}
-.simulador .contenido .t{font:10px var(--font-hud);letter-spacing:.28em;color:var(--tenue);margin-bottom:8px}
-.simulador .contenido .v{font:700 34px var(--font-hud);text-shadow:0 0 24px currentColor}
-.simulador img.logo{position:absolute;top:22px;width:36px;height:36px;border-radius:10px;object-fit:cover;z-index:2}
-.simulador::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;
-  background:linear-gradient(200deg,rgba(255,255,255,.14),transparent 42%)}
-.controles-sim{flex:1;min-width:250px;display:flex;flex-direction:column;gap:13px}
+/* ---------- simulador embebido ---------- */
+/* Es tools/simulador.html en un iframe. No se replica el HUD en CSS: una
+   segunda version acabaria divergiendo del firmware, que es justo lo que el
+   simulador del repo existe para evitar. */
+#sim-caja{
+  position:relative;width:100%;height:min(78vh,900px);min-height:560px;
+  border-radius:var(--radio-s);overflow:hidden;
+  border:1px solid var(--glass-b);background:rgba(3,10,24,.5);
+  box-shadow:inset 0 0 40px rgba(0,0,0,.45);
+}
+#sim-frame{width:100%;height:100%;border:0;display:block;background:#0b0e14}
+.controles-sim{display:flex;flex-direction:column;gap:13px}
 .controles-sim label{font:11px var(--font-hud);letter-spacing:.1em;text-transform:uppercase;color:var(--tenue)}
 .paleta{display:flex;gap:9px;flex-wrap:wrap}
 .paleta .op{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:.22s}
@@ -459,42 +447,44 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
 
   <!-- APARIENCIA / SIMULADOR -->
   <section id="v-apariencia" class="vista">
-    <div class="grid2">
-      <div class="tarjeta glass">
-        <h2>Simulador</h2>
-        <div class="simulador-wrap">
-          <div class="simulador" id="sim-circulo">
-            <div class="anillo"></div>
-            <div class="anillo2"></div>
-            <img id="sim-logo" class="logo oculto">
-            <div class="contenido">
-              <div class="t">NÚCLEO</div>
-              <div class="v">24°</div>
-            </div>
-          </div>
-          <div class="controles-sim">
-            <label style="font-size:12px;color:var(--tenue)">Nombre del asistente</label>
-            <input type="text" id="ap-nombre" placeholder="Asistente ESP32">
-            <label style="font-size:12px;color:var(--tenue)">Color de acento</label>
-            <div style="display:flex;gap:10px;align-items:center">
-              <input type="color" id="ap-acento" value="#5ee6c9">
-              <div class="paleta" id="paleta-acentos"></div>
-            </div>
-            <label style="font-size:12px;color:var(--tenue)">Logo (imagen, se muestra en el panel y en el HUD)</label>
-            <input type="text" id="ap-logo" placeholder="pega una URL de imagen, o sube un archivo">
-            <input type="file" id="ap-logo-file" accept="image/*" onchange="subirImagen(this,'ap-logo')">
-            <label style="font-size:12px;color:var(--tenue)">Fondo del panel</label>
-            <input type="text" id="ap-fondo" placeholder="pega una URL de imagen, o sube un archivo">
-            <input type="file" id="ap-fondo-file" accept="image/*" onchange="subirImagen(this,'ap-fondo')">
-            <button class="btn primario" onclick="guardarApariencia()" style="margin-top:6px">Guardar apariencia</button>
-          </div>
+    <div class="tarjeta glass">
+      <h2>Simulador del HUD<small>tools/simulador.html — puerto fiel de display.c + hud.c</small></h2>
+      <div class="sub">
+        El simulador completo, con las 10 pantallas, el táctil real, los overlays de
+        diagnóstico y el estado simulado. Es el mismo fichero del repo: lo que veas aquí
+        es lo que hace el firmware, sin una segunda versión que pueda divergir.
+      </div>
+      <div id="sim-caja">
+        <iframe id="sim-frame" src="/simulador" title="Simulador del HUD"></iframe>
+      </div>
+      <div id="sim-error" class="aviso oculto"></div>
+      <a class="btn chico" href="/simulador" target="_blank" rel="noopener"
+         style="margin-top:12px;display:inline-block">Abrir en pestaña aparte ↗</a>
+    </div>
+
+    <div class="tarjeta glass">
+      <h2>Identidad y apariencia del panel</h2>
+      <div class="sub">
+        Nombre, color y logo del panel web. El color de acento del <b>dispositivo</b>
+        se cambia en la pestaña Dispositivo, que sí lo aplica en el ESP32.
+      </div>
+      <div class="controles-sim">
+        <label>Nombre del asistente</label>
+        <input type="text" id="ap-nombre" placeholder="Asistente ESP32">
+        <label>Color de acento</label>
+        <div style="display:flex;gap:10px;align-items:center">
+          <input type="color" id="ap-acento" value="#38bdf8">
+          <div class="paleta" id="paleta-acentos"></div>
         </div>
+        <label>Logo</label>
+        <input type="text" id="ap-logo" placeholder="pega una URL de imagen, o sube un archivo">
+        <input type="file" id="ap-logo-file" accept="image/*" onchange="subirImagen(this,'ap-logo')">
+        <label>Fondo del panel</label>
+        <input type="text" id="ap-fondo" placeholder="pega una URL de imagen, o sube un archivo">
+        <input type="file" id="ap-fondo-file" accept="image/*" onchange="subirImagen(this,'ap-fondo')">
+        <button class="btn primario" onclick="guardarApariencia()" style="margin-top:6px">Guardar apariencia</button>
       </div>
-      <div class="tarjeta glass">
-        <h2>Vista previa en vivo</h2>
-        <div class="sub">Cambia los campos de la izquierda y se refleja aquí y en el panel al guardar.</div>
-        <div id="preview-info"></div>
-      </div>
+      <div id="preview-info" style="margin-top:14px"></div>
     </div>
   </section>
 
@@ -925,11 +915,10 @@ function aplicarApariencia(){
   actualizarSimulador();
 }
 function actualizarSimulador(){
+  // El HUD ya no se dibuja aqui: lo pinta tools/simulador.html dentro del
+  // iframe. Esto solo refresca el resumen de la apariencia del panel.
   const acento = document.getElementById("ap-acento").value;
-  document.getElementById("sim-circulo").style.setProperty("--sim-acento", acento);
   const logo = document.getElementById("ap-logo").value;
-  const img = document.getElementById("sim-logo");
-  if (logo) { img.src = logo; img.classList.remove("oculto"); } else { img.classList.add("oculto"); }
   document.getElementById("preview-info").innerHTML = `
     <div class="fila"><span>Nombre</span><b>${document.getElementById("ap-nombre").value || "Asistente ESP32"}</b></div>
     <div class="fila"><span>Acento</span><span class="pill" style="background:${acento}22;color:${acento}">${acento}</span></div>
@@ -1036,6 +1025,20 @@ async function guardarAgente(i, btn){
   await guardarSeccion("agentes", AJUSTES.agentes);
   alert("agente guardado");
 }
+
+// Si tools/simulador.html no esta en el servidor (despliegue que solo copio
+// servidor/), el iframe se queda en negro sin explicar nada. Se comprueba y se
+// dice que falta, en vez de dejar un recuadro vacio.
+(function compruebaSimulador(){
+  fetch("/simulador", {method:"HEAD"}).then(r => {
+    if (r.ok) return;
+    document.getElementById("sim-caja").classList.add("oculto");
+    const e = document.getElementById("sim-error");
+    e.textContent = "No se encontró tools/simulador.html en el servidor. " +
+      "El despliegue debe incluir la carpeta tools/ del repo, no solo servidor/.";
+    e.classList.remove("oculto");
+  }).catch(() => {});
+})();
 
 function cargarTodo(){
   cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarAjustes();

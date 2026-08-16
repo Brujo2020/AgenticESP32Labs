@@ -18,10 +18,11 @@ proveedores:
   # tuviera un problema puntual (o si un dia se agota el credito).
   llm: [bedrock, groq, nvidia, mlx]
   stt: [groq, mlx-whisper]
-  # Groq primero (misma clave que ya usas); macos de respaldo local si Groq
-  # falla o si su frecuencia de muestreo no encaja con el firmware (ver
-  # TTSOpenAICompatibleWav en proveedores/tts.py).
-  tts: [groq, macos]
+  # Groq primero (misma clave que ya usas). OJO: 'macos' NUNCA sirve de
+  # respaldo real en este servidor -- usa el comando "say", que solo existe
+  # en macOS, y el servidor corre Ubuntu. 'piper' es el respaldo que si
+  # funciona aqui: TTS neuronal 100% local, sin API ni limite de uso.
+  tts: [groq, piper, macos]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
@@ -136,8 +137,8 @@ catalogo:
 
     piper:
       backend: "piper"
-      model_path: ""          # ruta al .onnx de Piper
-      description: "Neuronal local, multiplataforma — demo edge"
+      model_path: "/home/ubuntu/piper-voces/es_ES-carlfm-x_low.onnx"
+      description: "Neuronal local (Piper) — respaldo real de TTS en el servidor Linux"
 
     openai:
       backend: "openai-compatible"

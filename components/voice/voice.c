@@ -58,6 +58,10 @@ static int  s_cre_n = 0;
 
 static StreamBufferHandle_t s_audio_sb = NULL;
 static volatile bool s_audio_desborde = false;
+// Lo pone aplica_estado() al recibir "idle": el servidor ya no manda mas
+// audio, asi que en cuanto se vacie el colchon hay que callar el DMA sin
+// esperar al timeout. Ver tarea_audio.
+static volatile bool s_fin_audio = false;
 
 static void tarea_audio(void *arg)
 {
@@ -85,10 +89,12 @@ static void tarea_audio(void *arg)
             sonando = true;
         }
 
-        // Sin datos durante 150 ms: la racha termino. La proxima vez se
-        // vuelve a esperar el colchon.
+        // 40 ms, no 150: mientras se espera, el DMA sigue repitiendo en bucle
+        // el ultimo trozo, y eso se oye como un zumbido al final de cada
+        // frase. Con el colchon de 340 ms por delante, 40 ms de hueco ya
+        // significan "se acabo" sin riesgo de cortar por un jitter de red.
         size_t n = xStreamBufferReceive(s_audio_sb, buf, sizeof(buf),
-                                        pdMS_TO_TICKS(150));
+                                        pdMS_TO_TICKS(40));
         if (n) {
             audio_play_pcm(buf, n);
         } else if (sonando) {
@@ -96,6 +102,14 @@ static void tarea_audio(void *arg)
             // bucle el final de la frase (ver audio_silencio en audio.c).
             audio_silencio();
             sonando = false;
+        }
+
+        // El servidor avisa con estado "idle" cuando ya no queda audio por
+        // mandar. Si ademas el colchon esta vacio, se puede callar YA sin
+        // esperar ningun timeout: es la via rapida para el caso normal.
+        if (s_fin_audio && !xStreamBufferBytesAvailable(s_audio_sb)) {
+            s_fin_audio = false;
+            if (sonando) { audio_silencio(); sonando = false; }
         }
 
         if (s_audio_desborde) {
@@ -359,6 +373,12 @@ bool voice_v2_activo(void) { return s_v2; }
 
 static void aplica_estado(const char *v)
 {
+    // "speaking" -> empieza a llegar audio; "idle"/"error" -> ya no llega mas.
+    // Saberlo permite callar el altavoz en cuanto se vacie el colchon, en vez
+    // de esperar un timeout con el DMA repitiendo el final de la frase.
+    if (!strcmp(v, "speaking")) s_fin_audio = false;
+    else                        s_fin_audio = true;
+
     if      (!strcmp(v, "listening"))  s_state = VOZ_ESCUCHANDO;
     else if (!strcmp(v, "processing")) s_state = VOZ_PENSANDO;
     else if (!strcmp(v, "speaking"))   s_state = VOZ_HABLANDO;

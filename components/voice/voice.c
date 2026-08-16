@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "ajustes.h"
+#include "version.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -128,7 +129,10 @@ typedef struct {
 } notifica_t;
 static notifica_t s_notifica = {0};
 
-#define FW_VERSION "0.8.0"
+// FW_VERSION vive ahora en board/include/version.h, junto a la fecha y hora
+// de compilacion: la usan el handshake de aqui y la pantalla de AJUSTES, y
+// con la definicion duplicada era cuestion de tiempo que dijeran cosas
+// distintas.
 
 static void hist_push(const char *txt, bool mio)
 {

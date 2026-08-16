@@ -10,6 +10,7 @@
 #include "voice.h"
 #include "ajustes.h"
 #include "bateria.h"
+#include "version.h"
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
@@ -667,14 +668,27 @@ static void p_ajustes(void)
 {
     ajustes_t *a = ajustes();
     uint16_t ac = ajustes_acento();
-    static const char *TEMAS[] = {"CIAN","MAGENTA","LIMA","AMBAR"};
+    // Ocho nombres, uno por tema. Antes solo habia cuatro mientras
+    // ajustes_acento() ya manejaba ocho: con tema >= 4 esto leia fuera del
+    // array y pintaba basura (o reiniciaba la placa).
+    static const char *TEMAS[] = {"CIAN","MAGENTA","LIMA","AMBAR",
+                                  "HIELO","SANGRE","GRIS","BLANCO"};
+    int tema = a->tema;
+    if (tema < 0 || tema >= (int)(sizeof(TEMAS)/sizeof(TEMAS[0]))) tema = 0;
+
+    // Version y momento de compilacion: responde de un vistazo "¿lo que hay
+    // flasheado es lo que acabo de compilar?", que mirando la placa no habia
+    // forma de saber.
+    char ver[40];
+    snprintf(ver, sizeof(ver), "V%s  %s %s", FW_VERSION, FW_FECHA, FW_HORA);
+    display_text_center(CX, 50, ver, display_escala(C_GREY, 200), 1);
 
     barra(74,  "BRILLO",  a->brillo,  ac, s_sel == 0);
     barra(102, "VOLUMEN", a->volumen, ac, s_sel == 1);
 
     int bx = CX - 52;
     display_text(bx, 122, "TEMA", s_sel == 2 ? C_WHITE : C_GREY, 1);
-    display_text(bx + 74, 122, TEMAS[a->tema], ac, 1);
+    display_text(bx + 74, 122, TEMAS[tema], ac, 1);
 
     conmutador(142, "LINEAS",  a->scanlines, s_sel == 3);
     conmutador(160, "REJILLA", a->rejilla,   s_sel == 4);

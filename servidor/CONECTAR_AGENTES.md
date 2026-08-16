@@ -114,6 +114,13 @@ esa red puede pintar en tu pantalla y hablarte por el altavoz. Para una red
 doméstica pasa; para una red de oficina o una demo en cliente, no. Antes de
 exponerlo fuera de tu LAN hace falta TLS y un token compartido.
 
+Esto sigue siendo cierto ahora que el servidor esta en una IP publica de
+AWS -- el puerto 8765 (voz) no tiene login. El **panel de administracion**
+(`servidor/panel_api.py`, puerto 8766) es distinto: ese si pide token
+(`PANEL_TOKEN`) para leer o cambiar cualquier cosa. Ver
+`servidor/deploy/README.md` para desplegarlo y `specs/001-panel-administracion-mcp/`
+para el resto del plan (TLS, historial de cambios, etc. siguen pendientes).
+
 ---
 
 ## Automatizar con el código de salida

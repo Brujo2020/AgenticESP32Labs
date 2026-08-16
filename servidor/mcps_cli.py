@@ -5,6 +5,7 @@ Gestor de MCP. Activa, desactiva y prueba servidores sin editar YAML a mano.
     python3 mcps_cli.py            menu interactivo
     python3 mcps_cli.py --listar   estado de todos
     python3 mcps_cli.py --probar   arranca cada activo y lista sus herramientas
+    python3 mcps_cli.py --nuevo    cuestionario para crear un MCP (usa sdk_mcp.generador)
 """
 import asyncio, os, sys, shutil
 from pathlib import Path
@@ -134,13 +135,48 @@ async def probar():
     await pool.cerrar()
 
 
+def nuevo_mcp():
+    """--nuevo: cuestionario corto que llama a sdk_mcp.generador.crear_mcp,
+    el mismo camino que usa el panel web (POST /api/mcp/nuevo) -- sin esto,
+    el atajo de terminal quedaba desincronizado del atajo web (spec 002)."""
+    from sdk_mcp.generador import crear_mcp, MCPExistente
+
+    print(f"\n{Z}=== MCP nuevo ==={N}")
+    nombre = input("nombre (minusculas, sin espacios, ej. 'notion'): ").strip()
+    if not nombre:
+        print(f"{R}cancelado{N}")
+        return
+    descripcion = input("descripcion breve: ").strip()
+    categoria = input("categoria [local]: ").strip() or "local"
+    activar = input("activarlo ya? [S/n]: ").strip().lower() not in ("n", "no")
+
+    try:
+        ruta = crear_mcp(nombre=nombre, descripcion=descripcion,
+                          categoria=categoria, activar=activar)
+    except MCPExistente as e:
+        print(f"{R}{e}{N}")
+        return
+    except ValueError as e:
+        print(f"{R}{e}{N}")
+        return
+
+    print(f"{V}creado: {ruta}{N}")
+    if activar:
+        print(f"{A}activado en config.yaml -- reinicia el bridge de voz para que tome efecto{N}")
+    print(f"{G}edita {ruta} y reemplaza la tool de ejemplo por la logica real{N}")
+
+
 def menu():
     while True:
         orden, cfg, _ = listar()
-        print(f"{Z}numero{N} = activar/desactivar   {Z}p{N} = probar   {Z}q{N} = salir")
+        print(f"{Z}numero{N} = activar/desactivar   {Z}n{N} = nuevo   {Z}p{N} = probar   {Z}q{N} = salir")
         op = input("> ").strip().lower()
         if op in ("q", "salir", ""):
             break
+        if op == "n":
+            nuevo_mcp()
+            input("\nintro para continuar...")
+            continue
         if op == "p":
             asyncio.run(probar())
             input("\nintro para continuar...")
@@ -156,5 +192,7 @@ if __name__ == "__main__":
         listar()
     elif "--probar" in sys.argv:
         asyncio.run(probar())
+    elif "--nuevo" in sys.argv:
+        nuevo_mcp()
     else:
         menu()

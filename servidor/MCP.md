@@ -1,5 +1,19 @@
 # Cablear MCP — guía rápida
 
+## Desde el panel web (recomendado)
+
+Si el servidor tiene el panel corriendo (`servidor/panel_api.py`, ver
+`servidor/deploy/README.md`), es la forma mas rapida: entra a
+`http://<host-del-servidor>:8766/` con el `PANEL_TOKEN`, y desde ahi:
+
+- Activas/desactivas cualquier MCP del catalogo con un switch.
+- Creas un MCP nuevo con un formulario -- llama al mismo generador que el
+  atajo de CLI de mas abajo, asi que el resultado es identico.
+- Ves de un vistazo cuales estan activos y cuales fallaron al arrancar.
+
+No reemplaza `mcps_cli.py`/`consola.py` -- los reusa por debajo, asi que
+todo lo de esta guia sigue siendo valido si prefieres terminal.
+
 ## Desde VSCode
 
 Abre la carpeta `~/servidor` y usa **`Cmd+Shift+P` → "Tasks: Run Task"**:
@@ -20,6 +34,7 @@ Abre la carpeta `~/servidor` y usa **`Cmd+Shift+P` → "Tasks: Run Task"**:
 python3 mcps_cli.py            # menú
 python3 mcps_cli.py --listar   # estado de todos
 python3 mcps_cli.py --probar   # arranca los activos y lista herramientas
+python3 mcps_cli.py --nuevo    # cuestionario para crear un MCP nuevo
 ```
 
 El gestor te dice **por qué** algo no está listo: si falta el binario (`npx`, `uvx`)
@@ -46,6 +61,8 @@ export GITHUB_TOKEN=ghp_...          # repos, issues, PRs
 
 ## Añadir uno que no esté
 
+### Que ya existe en algun lado (npx, uvx...)
+
 Entrada nueva en `mcp_catalogo.yaml`:
 
 ```yaml
@@ -58,6 +75,25 @@ mi-mcp:
 ```
 
 Aparece en el menú automáticamente. No se toca ni el agente ni el firmware.
+
+### Uno propio, desde cero
+
+En vez de escribir el YAML a mano en dos archivos (y arriesgarte al bug
+clasico de "esta en tools_to_enable pero no en mcp_servers"), usa el
+generador (spec `002-sdk-mcp-scaffolding`):
+
+```bash
+python3 mcps_cli.py --nuevo
+```
+
+Te pregunta nombre, descripcion y categoria, y crea `mcps/<nombre>.py` con
+la plantilla lista (usa `sdk_mcp.MCPBase`, que da logging y manejo de
+errores homogeneo por tool) mas las dos entradas de YAML en una sola
+operacion. Reemplaza la tool de ejemplo por la logica real y listo.
+
+Si tu MCP solo envuelve una API REST u OpenAI-compatible (sin logica propia),
+no hace falta ni escribir la clase Python -- ver `sdk_mcp/declarativo.py` y
+la seccion `declarativo:` del catalogo.
 
 ## Cómo llegan al asistente
 

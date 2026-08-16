@@ -15,8 +15,8 @@
       con `pip install -r requirements.txt` hecho** — no se pudo ejecutar
       desde aqui (sin el venv del proyecto), solo se verifico sintaxis con
       `py_compile`.
-- [ ] `mcps_cli.py --nuevo`: cuestionario + llamada al generador.
-      **Pendiente** — el generador ya existe y esta cableado desde el panel
-      web (`POST /api/mcp/nuevo`), falta el atajo de CLI equivalente.
-- [ ] Actualizar `MCP.md` con el nuevo flujo recomendado.
+- [x] `mcps_cli.py --nuevo`: cuestionario + llamada al generador (mismo
+      camino que usa el panel web via `POST /api/mcp/nuevo`).
+- [x] Actualizar `MCP.md` con el nuevo flujo recomendado (seccion "Desde
+      el panel web" al inicio, mas la seccion "Uno propio, desde cero").
 - [x] Endpoint en `panel_api` que expone `crear_mcp` (`POST /api/mcp/nuevo`).

@@ -451,6 +451,27 @@ async def dispositivo_pantallas():
     return {"ok": True, "resultado": v}
 
 
+@app.get("/api/dispositivo/estado", dependencies=router_dep)
+async def dispositivo_estado():
+    """Estado REAL de la placa, no lo ultimo que el panel le mando.
+
+    El firmware publica brillo, volumen, tema, bateria, heap y RSSI al
+    conectar y cada pocos segundos (voice_reporta_estado). Asi el panel puede
+    mostrar lo que el aparato tiene de verdad: si alguien cambia el brillo en
+    la propia pantalla de AJUSTES, aqui se ve.
+
+    Nunca lanza: si el bridge no responde, se devuelve conectado=False y el
+    panel lo pinta como 'sin dispositivo' en vez de romperse.
+    """
+    try:
+        v = await _control_llama("estado", {}, timeout=5)
+    except HTTPException as e:
+        return {"conectado": False, "motivo": str(e.detail)}
+    if not isinstance(v, dict):
+        return {"conectado": False, "motivo": str(v)}
+    return v
+
+
 @app.post("/api/dispositivo/reiniciar", dependencies=router_dep)
 async def dispositivo_reiniciar():
     v = await _control_llama("reiniciar", {})

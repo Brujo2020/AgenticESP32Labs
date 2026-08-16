@@ -91,3 +91,9 @@ const char *voice_notifica_nivel(void);   // "info" "ok" "warn" "error"
 // Protocolo v2 detectado (el servidor no manda 'hola', lo recibe: esto
 // refleja si el firmware YA emitio su propio handshake al conectar).
 bool voice_v2_activo(void);
+
+// Publica hacia el servidor el estado REAL de la placa (version, brillo,
+// volumen, tema, bateria, heap, RSSI). Lo llama sola la tarea del microfono
+// cada pocos segundos y al conectar; tambien puede llamarse tras cambiar un
+// ajuste en la propia pantalla, para que el panel web se entere al momento.
+void voice_reporta_estado(void);

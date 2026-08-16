@@ -355,6 +355,15 @@ async def atiende(ws):
                 CANAL.resuelve(data.get("qid", ""), data.get("opcion", -1))
                 continue
 
+            # Estado real de la placa: brillo, volumen, tema, bateria, heap...
+            # Lo manda el firmware al conectar y cada pocos segundos. Es lo que
+            # permite que el panel muestre lo que el aparato TIENE, y no solo
+            # lo ultimo que el panel le mando -- si el usuario cambia el brillo
+            # en la pantalla de AJUSTES, el panel se entera igual.
+            if data.get("t") == "estado_disp":
+                CANAL.estado.update({k: v for k, v in data.items() if k != "t"})
+                continue
+
             # Una vista interactiva: el usuario toco una fila
             if data.get("t") == "evento":
                 log.info("evento en vista '%s': fila %s",
@@ -367,41 +376,76 @@ async def atiende(ws):
                     await envia(ws, "estado", "idle")
                     continue
 
-                await envia(ws, "estado", "processing")
-                wav = pcm_a_wav(bytes(buffer))
-                buffer.clear()
+                # TODO el procesamiento va dentro de un try. Antes, si fallaba
+                # cualquier cosa -- el STT, el agente, una herramienta MCP, el
+                # TTS -- la excepcion subia hasta el bucle, salia del 'async
+                # for' y tumbaba la CONEXION del ESP32. Un error puntual del
+                # LLM dejaba la placa desconectada hasta que alguien la
+                # reiniciaba, y en el panel se veia como "SIN DISPOSITIVO".
+                # Un fallo procesando una frase no puede costar el enlace: se
+                # avisa en pantalla y se sigue escuchando.
+                try:
+                    await envia(ws, "estado", "processing")
+                    wav = pcm_a_wav(bytes(buffer))
+                    buffer.clear()
 
-                texto = await asyncio.to_thread(transcribe, wav)
-                os.unlink(wav)
-                log.info("escuchado: %s", texto)
-                if not texto:
-                    await envia(ws, "texto", "NO TE ENTENDI")
+                    texto = await asyncio.to_thread(transcribe, wav)
+                    try:
+                        os.unlink(wav)
+                    except OSError:
+                        pass
+                    log.info("escuchado: %s", texto)
+                    if not texto:
+                        await envia(ws, "texto", "NO TE ENTENDI")
+                        await envia(ws, "estado", "idle")
+                        continue
+
+                    await envia(ws, "texto", texto[:40].upper())
+                    await envia(ws, "tu", texto[:33].upper())
+                    respuesta = await agente.chat(texto)
+                    log.info("respuesta: %s", respuesta)
+
+                    await envia(ws, "texto", respuesta[:40].upper())
+                    for trozo in _en_lineas(respuesta, 33)[:3]:
+                        await envia(ws, "ia", trozo)
+
+                    # Con la lectura por voz apagada en el panel, la respuesta
+                    # se muestra en pantalla y ya: ni se sintetiza (no se gasta
+                    # cuota de TTS) ni se pone el HUD en "speaking", que seria
+                    # mentira.
+                    if debe_hablar():
+                        await envia(ws, "estado", "speaking")
+                        audio = await asyncio.to_thread(sintetiza, respuesta)
+                        for i in range(0, len(audio), 2048):
+                            await envia_raw(ws, audio[i:i + 2048])
                     await envia(ws, "estado", "idle")
-                    continue
 
-                await envia(ws, "texto", texto[:40].upper())
-                await envia(ws, "tu", texto[:33].upper())
-                respuesta = await agente.chat(texto)
-                log.info("respuesta: %s", respuesta)
-
-                await envia(ws, "texto", respuesta[:40].upper())
-                for trozo in _en_lineas(respuesta, 33)[:3]:
-                    await envia(ws, "ia", trozo)
-
-                # Con la lectura por voz apagada en el panel, la respuesta se
-                # muestra en pantalla y ya: ni se sintetiza (no se gasta cuota
-                # de TTS) ni se pone el HUD en "speaking", que seria mentira.
-                if debe_hablar():
-                    await envia(ws, "estado", "speaking")
-                    audio = await asyncio.to_thread(sintetiza, respuesta)
-                    for i in range(0, len(audio), 2048):
-                        await envia_raw(ws, audio[i:i + 2048])
-                await envia(ws, "estado", "idle")
+                except websockets.ConnectionClosed:
+                    raise            # esta si es el enlace: que la maneje el for
+                except Exception as e:
+                    # Cualquier otro fallo es de ESTA frase, no del enlace.
+                    log.exception("fallo procesando la peticion: %s", e)
+                    buffer.clear()
+                    try:
+                        await envia(ws, "texto", "ERROR, REINTENTA")
+                        await envia(ws, "estado", "idle")
+                    except websockets.ConnectionClosed:
+                        raise
 
     except websockets.ConnectionClosed:
         log.info("ESP32 desconectado")
+    except Exception as e:
+        # Que un fallo inesperado no deje el proceso en un estado raro: se
+        # registra con traza y se limpia igual en el finally. El ESP32
+        # reconecta solo a los 2 s.
+        log.exception("error inesperado atendiendo al ESP32: %s", e)
     finally:
-        CANAL.desconecta()
+        # Solo se suelta el CANAL si sigue siendo NUESTRA conexion. Si la placa
+        # se reconecto mientras esta corrutina agonizaba, el CANAL ya apunta a
+        # la sesion nueva y borrarlo aqui la dejaria muerta: el panel diria
+        # "SIN DISPOSITIVO" con el aparato perfectamente conectado.
+        if CANAL.ws is ws:
+            CANAL.desconecta()
         tarea_news.cancel()
         tarea_tele.cancel()
 
@@ -445,7 +489,15 @@ async def main():
     anuncia_mdns(ip)
     log.info("IP de este equipo: %s", ip)
     log.info("escuchando en ws://%s:%d", HOST, PORT)
-    async with websockets.serve(atiende, HOST, PORT, max_size=None):
+    # ping_interval/ping_timeout: el servidor tambien vigila el enlace. Sin
+    # esto, un ESP32 que desaparece de malas maneras (se va el WiFi, se corta
+    # la luz) deja aqui una conexion abierta para siempre: CANAL sigue
+    # creyendo que hay dispositivo, el panel intenta aplicar ajustes contra un
+    # socket muerto, y cuando la placa vuelve de verdad hay dos sesiones.
+    # Con esto el servidor detecta el silencio en ~40 s y limpia.
+    async with websockets.serve(atiende, HOST, PORT, max_size=None,
+                                ping_interval=20, ping_timeout=20,
+                                close_timeout=5):
         await asyncio.Future()
 
 

@@ -280,6 +280,18 @@ input[type=color]{width:46px;height:36px;padding:3px;border-radius:var(--radio-x
 .arrastre{color:var(--tenue2);cursor:grab;padding:0 4px;font-size:15px}
 .pantalla-item.arrastrando{opacity:.35;transform:scale(.97)}
 
+/* ---------- telemetria del dispositivo ---------- */
+.telemetria{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+.tele{background:rgba(2,10,26,.5);border:1px solid var(--glass-b);border-left:2px solid var(--acento);
+  padding:9px 12px;position:relative;overflow:hidden}
+.tele .k{font:9.5px var(--font-hud);letter-spacing:.14em;color:var(--tenue);text-transform:uppercase}
+.tele .v{font:700 17px var(--font-hud);color:var(--texto);margin-top:3px;text-shadow:0 0 12px rgba(56,189,248,.3)}
+.tele.off{opacity:.4;border-left-color:var(--tenue2)}
+.tele.alerta{border-left-color:var(--err)}
+.tele.alerta .v{color:var(--err)}
+.tele .barra{position:absolute;left:0;bottom:0;height:2px;background:linear-gradient(90deg,var(--acento),var(--acento2));
+  transition:width .4s ease}
+
 /* ---------- simulador embebido ---------- */
 /* Es tools/simulador.html en un iframe. No se replica el HUD en CSS: una
    segunda version acabaria divergiendo del firmware, que es justo lo que el
@@ -400,7 +412,10 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
   <section id="v-dispositivo" class="vista">
     <div class="tarjeta glass">
       <h2>Ajustes del ESP32<span id="dispo-en-vivo" class="pill neutro">comprobando…</span></h2>
-      <div class="aviso info">Se guardan en config.yaml y además se aplican en vivo en el ESP32 (requiere firmware con el manejador de "config" en components/voice/voice.c y el dispositivo conectado al puente).</div>
+
+      <!-- Estado REAL de la placa: lo que el aparato reporta, no lo que el
+           panel le mandó. Se refresca solo cada 3 s. -->
+      <div id="dispo-telemetria" class="telemetria"></div>
 
       <div class="slider-fila">
         <div class="cab"><b>☀️ Brillo</b><span id="v-brillo">80%</span></div>
@@ -822,18 +837,19 @@ async function guardarDispositivo(){
   };
   const aviso = document.getElementById("dispo-resultado");
   try {
-    const r = await api("/api/dispositivo/aplicar", {method:"POST", body: JSON.stringify(valores)});
-    aviso.textContent = "✅ aplicado en el ESP32: " + JSON.stringify(r.resultado);
+    await api("/api/dispositivo/aplicar", {method:"POST", body: JSON.stringify(valores)});
+    aviso.textContent = "✅ aplicado en el ESP32";
     aviso.classList.remove("oculto");
-    document.getElementById("dispo-en-vivo").className = "pill ok";
-    document.getElementById("dispo-en-vivo").textContent = "en vivo";
+    setTimeout(() => aviso.classList.add("oculto"), 2500);
   } catch(e) {
-    aviso.textContent = "⚠️ no se pudo aplicar en vivo (" + e.message + "). Se guarda igual para cuando el dispositivo esté disponible.";
+    // El detalle tecnico no aporta nada aqui: el chip de estado y la
+    // telemetria de arriba ya dicen si hay dispositivo o no.
+    aviso.textContent = "⚠️ el dispositivo no está conectado. Se guarda y se "
+      + "aplicará cuando vuelva.";
     aviso.classList.remove("oculto");
-    document.getElementById("dispo-en-vivo").className = "pill warn";
-    document.getElementById("dispo-en-vivo").textContent = "sin dispositivo";
   }
   await guardarSeccion("dispositivo", valores);
+  sincronizaDispositivo();     // refresca ya, sin esperar al ciclo de 3 s
 }
 async function toggleDispositivoBool(campo, idBtn){
   const btn = document.getElementById(idBtn);
@@ -1040,8 +1056,77 @@ async function guardarAgente(i, btn){
   }).catch(() => {});
 })();
 
+// ================= SINCRONIZACION CON EL DISPOSITIVO =================
+// El panel muestra lo que la placa reporta de verdad (voice_reporta_estado en
+// el firmware), no lo ultimo que el panel le mando. Si alguien cambia el
+// brillo en la pantalla de AJUSTES del propio ESP32, aqui se ve.
+let DISPO = {conectado:false};
+let TOCANDO = false;     // el usuario esta arrastrando un slider ahora mismo
+
+function tele(k, v, opts={}){
+  const cls = opts.off ? "tele off" : opts.alerta ? "tele alerta" : "tele";
+  const barra = opts.pct != null
+    ? `<div class="barra" style="width:${Math.max(0,Math.min(100,opts.pct))}%"></div>` : "";
+  return `<div class="${cls}"><div class="k">${k}</div><div class="v">${v}</div>${barra}</div>`;
+}
+
+async function sincronizaDispositivo(){
+  let d;
+  try { d = await api("/api/dispositivo/estado"); }
+  catch(e){ d = {conectado:false, motivo:e.message}; }
+  DISPO = d;
+
+  const chip = document.getElementById("dispo-en-vivo");
+  chip.className = d.conectado ? "pill ok" : "pill warn";
+  chip.textContent = d.conectado ? "conectado" : "sin dispositivo";
+
+  const off = !d.conectado;
+  const bat = d.bateria;
+  const cel = [
+    tele("Enlace", d.conectado ? "ACTIVO" : "CAIDO", {off, alerta:off}),
+    tele("Firmware", d.fw ? "v"+d.fw : "—", {off}),
+    tele("Compilado", d.compilado || "—", {off}),
+    tele("Batería", (bat==null||bat<0) ? "—" : bat+"%" + (d.cargando?" ⚡":""),
+         {off, pct:bat, alerta: bat!=null && bat>=0 && bat<15}),
+    tele("WiFi", d.rssi ? d.rssi+" dBm" : "—", {off}),
+    tele("Memoria", d.heap ? Math.round(d.heap/1024)+" KB" : "—", {off}),
+  ].join("");
+  document.getElementById("dispo-telemetria").innerHTML = cel;
+
+  // Sincroniza los controles con el estado REAL, salvo mientras el usuario
+  // arrastra: pisarle el slider bajo el dedo es lo que hace que un panel se
+  // sienta roto.
+  if (d.conectado && !TOCANDO) {
+    if (typeof d.brillo === "number")  ponSlider("brillo","v-brillo",d.brillo);
+    if (typeof d.volumen === "number") ponSlider("volumen","v-volumen",d.volumen);
+    if (typeof d.tema === "number" && TEMAS_HUD[d.tema])
+      document.getElementById("tema-hud").value = TEMAS_HUD[d.tema];
+    if (typeof d.efectos === "boolean")
+      document.getElementById("sw-efectos").classList.toggle("on", d.efectos);
+  }
+}
+const TEMAS_HUD = ["cyan","magenta","lime","amber","ice","blood","grey","white"];
+function ponSlider(id, idTxt, v){
+  const el = document.getElementById(id);
+  if (el && String(el.value) !== String(v)) {
+    el.value = v;
+    document.getElementById(idTxt).textContent = v + "%";
+  }
+}
+// Marca "el usuario esta tocando" para no pisarle el control desde el sync.
+document.addEventListener("DOMContentLoaded", () => {
+  ["brillo","volumen"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("pointerdown", () => TOCANDO = true);
+    el.addEventListener("pointerup",   () => setTimeout(()=>TOCANDO=false, 1200));
+  });
+});
+
 function cargarTodo(){
   cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarAjustes();
+  sincronizaDispositivo();
+  setInterval(sincronizaDispositivo, 3000);
 }
 if (TOKEN) probarLogin(); else document.getElementById("login").classList.remove("oculto");
 </script>

@@ -9,6 +9,9 @@
 #include "board_pins.h"
 #include "ajustes.h"
 #include "version.h"
+#include "bateria.h"
+#include "net.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -405,6 +408,10 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                           FW_VERSION, VISTA_MAX, VISTA_FILAS_MAX, VOZ_ANCHO - 1);
         esp_websocket_client_send_text(s_ws, hola, n, pdMS_TO_TICKS(200));
         s_v2 = true;
+        // Estado real de la placa nada mas conectar: asi el panel muestra lo
+        // que el aparato tiene de verdad desde el primer segundo, sin esperar
+        // al reporte periodico.
+        voice_reporta_estado();
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
@@ -531,15 +538,44 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
 }
 
 // Bombea el microfono al socket mientras se mantiene el dedo
+// Publica el estado REAL de la placa hacia el servidor.
+//
+// Sin esto el panel web solo sabia lo ultimo que el habia mandado, no lo que
+// el aparato tiene de verdad: si alguien cambiaba el brillo en la pantalla de
+// AJUSTES, o la placa se reiniciaba y cargaba otros valores de NVS, el panel
+// seguia mostrando lo suyo. Con este mensaje la sincronizacion es en los dos
+// sentidos y el panel puede mostrar el estado autentico.
+void voice_reporta_estado(void)
+{
+    if (!s_conn || !s_ws) return;
+    ajustes_t *a = ajustes();
+    char m[240];
+    int n = snprintf(m, sizeof(m),
+        "{\"t\":\"estado_disp\",\"fw\":\"%s\",\"compilado\":\"%s %s\","
+        "\"brillo\":%d,\"volumen\":%d,\"tema\":%d,\"efectos\":%s,"
+        "\"bateria\":%d,\"cargando\":%s,\"heap\":%u,\"rssi\":%d}",
+        FW_VERSION, FW_FECHA, FW_HORA,
+        a->brillo, a->volumen, a->tema, a->efectos ? "true" : "false",
+        bateria_disponible() ? bateria_pct() : -1,
+        bateria_cargando() ? "true" : "false",
+        (unsigned)esp_get_free_heap_size(), net_rssi());
+    if (n > 0 && n < (int)sizeof(m))
+        esp_websocket_client_send_text(s_ws, m, n, pdMS_TO_TICKS(200));
+}
+
 static void tarea_mic(void *arg)
 {
     static int16_t buf[512];
+    int ciclos = 0;
     while (1) {
         if (s_talking && s_conn) {
             size_t got = audio_mic_read(buf, sizeof(buf), 100);
             if (got) esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
         } else {
             vTaskDelay(pdMS_TO_TICKS(20));
+            // Cada ~4 s se publica el estado. Se aprovecha esta tarea en vez
+            // de crear otra: ya esta despierta y ociosa cuando no se habla.
+            if (++ciclos >= 200) { ciclos = 0; voice_reporta_estado(); }
         }
     }
 }
@@ -550,8 +586,22 @@ esp_err_t voice_init(const char *host, int port)
     snprintf(uri, sizeof(uri), "ws://%s:%d", host, port);
     esp_websocket_client_config_t cfg = {
         .uri = uri,
-        .reconnect_timeout_ms = 5000,
+        // Reconexion agresiva: 2 s en vez de 5. Si el enlace se cae, lo que
+        // se nota es el tiempo que la placa tarda en volver.
+        .reconnect_timeout_ms = 2000,
         .network_timeout_ms = 8000,
+        // PING/PONG del propio protocolo websocket. Es lo que evita las
+        // conexiones zombi: cuando el enlace se corta de forma sucia (WiFi
+        // que se va, NAT que caduca la sesion, servidor reiniciado) el TCP
+        // puede quedarse "abierto" para el ESP32 durante minutos, y el
+        // firmware cree estar conectado mientras el servidor ya no lo ve.
+        // Ese es exactamente el estado en el que el panel dice "SIN
+        // DISPOSITIVO" aunque la placa parezca estar bien.
+        // Con esto, si en 15 s no llega el PONG, el cliente da la conexion
+        // por muerta y reconecta solo.
+        .ping_interval_sec = 10,
+        .pingpong_timeout_sec = 15,
+        .disable_auto_reconnect = false,
         // El bridge manda el audio en trozos de 2048 bytes. Con el buffer por
         // defecto (1024) cada trozo llegaba partido en dos eventos, doblando
         // el numero de despertares por segundo de audio sin necesidad.

@@ -18,11 +18,15 @@ proveedores:
   # tuviera un problema puntual (o si un dia se agota el credito).
   llm: [bedrock, groq, nvidia, mlx]
   stt: [groq, mlx-whisper]
-  # Groq primero (misma clave que ya usas). OJO: 'macos' NUNCA sirve de
-  # respaldo real en este servidor -- usa el comando "say", que solo existe
-  # en macOS, y el servidor corre Ubuntu. 'piper' es el respaldo que si
-  # funciona aqui: TTS neuronal 100% local, sin API ni limite de uso.
-  tts: [groq, piper, macos]
+  # PIPER PRIMERO, no Groq. El TTS de Groq es 'canopylabs/orpheus-v1-english':
+  # un modelo MONOLINGUE INGLES con voz inglesa ("austin"). Dandole texto en
+  # espanol lo pronuncia con fonetica inglesa -- de ahi que sonara tan mal.
+  # Piper con una voz es_ES es TTS neuronal en espanol de verdad, local, sin
+  # API ni limite de uso. Groq queda detras solo como ultimo recurso.
+  #
+  # OJO: 'macos' NUNCA sirve de respaldo real en este servidor -- usa el
+  # comando "say", que solo existe en macOS, y el servidor corre Ubuntu.
+  tts: [piper, groq, macos]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
@@ -106,9 +110,15 @@ catalogo:
   stt:
     groq:
       backend: "groq"
-      model: "whisper-large-v3-turbo"
+      # large-v3 (no 'turbo'). Turbo es ~2x mas rapido pero mide peor en
+      # idiomas distintos del ingles, y con audio corto grabado por el
+      # microfono de la placa (24 kHz, sala con ruido) la diferencia se nota:
+      # una transcripcion equivocada hace que el agente conteste a otra cosa,
+      # que es justo lo que parecia "el modelo dice sandeces". Un par de
+      # decimas mas de latencia valen la pena si a cambio entiende bien.
+      model: "whisper-large-v3"
       api_key: "${GROQ_API_KEY}"
-      description: "Whisper v3 turbo en Groq — gratis y muy rapido"
+      description: "Whisper large v3 en Groq — mas preciso en espanol"
 
     mlx-whisper:
       backend: "mlx-whisper"
@@ -122,13 +132,18 @@ catalogo:
       api_key: "${OPENAI_API_KEY}"
 
   tts:
-    groq:                     # GRATIS/muy barato · misma GROQ_API_KEY del LLM y el STT
+    groq:                     # ULTIMO RECURSO: no habla espanol
       backend: "openai-compatible-wav"    # Groq solo devuelve WAV, nunca PCM crudo
       base_url: "https://api.groq.com/openai/v1"
+      # Orpheus es MONOLINGUE INGLES (lo dice el propio nombre del modelo) y
+      # "austin" es una voz inglesa. Con texto en espanol lo lee con fonetica
+      # inglesa y suena fatal. Se deja por si algun dia hace falta un TTS de
+      # emergencia con la clave que ya existe, pero NO debe ir primero en la
+      # cadena mientras el asistente responda en espanol.
       model: "canopylabs/orpheus-v1-english"
       voice: "austin"
       api_key: "${GROQ_API_KEY}"
-      description: "Groq (Orpheus) — misma clave que ya usas, sin cuenta nueva"
+      description: "Groq (Orpheus) — SOLO INGLES, ultimo recurso"
 
     macos:
       backend: "macos"
@@ -137,8 +152,16 @@ catalogo:
 
     piper:
       backend: "piper"
-      model_path: "/home/ubuntu/piper-voces/es_ES-carlfm-x_low.onnx"
-      description: "Neuronal local (Piper) — respaldo real de TTS en el servidor Linux"
+      # Voz es_ES de calidad 'medium'. La anterior era 'carlfm-x_low', la
+      # calidad MAS BAJA de la familia: bastante robotica y con mala prosodia,
+      # que por un altavoz pequeno se nota mucho. 'medium' pesa ~60 MB y suena
+      # claramente mejor. Si el fichero no existe, disponible() devuelve False
+      # y la cadena cae sola al siguiente proveedor: no rompe nada.
+      # Descarga (ver PROVEEDORES.md):
+      #   https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_ES/davefx/medium/es_ES-davefx-medium.onnx
+      #   ...y el .onnx.json de al lado, que trae el sample_rate del modelo.
+      model_path: "/home/ubuntu/piper-voces/es_ES-davefx-medium.onnx"
+      description: "Neuronal local en espanol (Piper) — TTS principal"
 
     openai:
       backend: "openai-compatible"

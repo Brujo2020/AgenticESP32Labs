@@ -1,0 +1,15 @@
+[Unit]
+Description=Agentic ESP32 — panel de administracion (API + web, 8766)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/esp32-hud-idf/servidor
+ExecStart=/home/ubuntu/esp32-hud-idf/servidor/venv/bin/uvicorn panel_api:app --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=3
+EnvironmentFile=-/home/ubuntu/esp32-hud-idf/servidor/.env
+
+[Install]
+WantedBy=multi-user.target

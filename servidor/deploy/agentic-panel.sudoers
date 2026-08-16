@@ -1,0 +1,3 @@
+# Permite al panel reiniciar el servicio de voz sin pedir password, SOLO ese
+# comando exacto. Instalar en /etc/sudoers.d/agentic-panel (visudo -c despues).
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart agentic-voz

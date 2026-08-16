@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel — Asistente ESP32</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#14171c; --linea:#232830; --texto:#e6e9ee;
+  --tenue:#8a94a3; --acento:#5ee6c9; --acento2:#7aa2ff; --ok:#5ee68a;
+  --warn:#e6c95e; --err:#e65e5e; --radio:12px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--texto);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{padding:20px 28px;border-bottom:1px solid var(--linea);
+  display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:17px;font-weight:600;margin:0;letter-spacing:.2px}
+header h1 span{color:var(--acento)}
+#estado-conexion{font-size:12px;color:var(--tenue)}
+main{max-width:1080px;margin:0 auto;padding:24px 28px 80px;display:grid;gap:22px}
+.tarjeta{background:var(--panel);border:1px solid var(--linea);border-radius:var(--radio);padding:18px 20px}
+.tarjeta h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--tenue);margin:0 0 14px}
+.fila{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 0;border-bottom:1px solid var(--linea)}
+.fila:last-child{border-bottom:none}
+.pill{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
+.pill.ok{background:rgba(94,230,138,.15);color:var(--ok)}
+.pill.warn{background:rgba(230,201,94,.15);color:var(--warn)}
+.pill.err{background:rgba(230,94,94,.15);color:var(--err)}
+.chip{background:#1c2129;border:1px solid var(--linea);border-radius:8px;padding:5px 10px;
+  font-size:13px;cursor:grab;user-select:none;display:flex;align-items:center;gap:6px}
+.chip:active{cursor:grabbing}
+.cadena{display:flex;gap:8px;flex-wrap:wrap;padding:10px;background:#0e1013;
+  border:1px dashed var(--linea);border-radius:10px;min-height:44px}
+.cadena .chip.arrastrando{opacity:.35}
+.grid-mcp{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.grid-mcp{grid-template-columns:1fr}}
+.mcp-item{display:flex;align-items:center;justify-content:space-between;
+  background:#0e1013;border:1px solid var(--linea);border-radius:10px;padding:10px 12px}
+.mcp-item small{color:var(--tenue);display:block;font-size:11px;margin-top:2px}
+.switch{width:38px;height:22px;border-radius:999px;background:#2a2f38;position:relative;
+  cursor:pointer;border:none;flex-shrink:0}
+.switch.on{background:var(--acento)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;
+  border-radius:50%;background:#fff;transition:transform .15s}
+.switch.on::after{transform:translateX(16px)}
+input,button.btn{background:#0e1013;border:1px solid var(--linea);color:var(--texto);
+  border-radius:8px;padding:8px 10px;font-size:13px}
+button.btn{cursor:pointer}
+button.btn:hover{border-color:var(--acento)}
+button.btn.primario{background:var(--acento);color:#06110d;border-color:var(--acento);font-weight:600}
+.claves-fila input{width:220px}
+.form-nuevo{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
+  justify-content:center;flex-direction:column;gap:14px}
+#login input{width:280px}
+.oculto{display:none}
+.aviso{font-size:12px;color:var(--warn);margin-top:10px}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>Panel — <span>Asistente ESP32</span></h1>
+  <input id="token" type="password" placeholder="token del panel">
+  <button class="btn primario" onclick="entrar()">Entrar</button>
+  <div id="login-error" class="aviso oculto">token invalido</div>
+</div>
+
+<div id="app" class="oculto">
+<header>
+  <h1>Panel — <span>Asistente ESP32</span></h1>
+  <div id="estado-conexion">conectando…</div>
+</header>
+<main>
+
+  <section class="tarjeta">
+    <h2>Estado</h2>
+    <div id="resumen"></div>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Proveedores — arrastra para reordenar la cadena de respaldo</h2>
+    <div id="proveedores"></div>
+  </section>
+
+  <section class="tarjeta">
+    <h2>MCP — activar / desactivar</h2>
+    <div id="mcp" class="grid-mcp"></div>
+    <div class="form-nuevo">
+      <input id="nuevo-nombre" placeholder="nombre_mcp">
+      <input id="nuevo-desc" placeholder="descripcion" style="flex:1;min-width:220px">
+      <button class="btn" onclick="crearMcp()">+ MCP nuevo</button>
+    </div>
+    <div class="aviso">Los cambios se guardan al instante. Si "reinicio_pendiente" aparece, hace falta reiniciar el servicio de voz para que tome efecto (botón abajo).</div>
+    <button class="btn" style="margin-top:10px" onclick="reiniciarVoz()">Reiniciar servicio de voz</button>
+  </section>
+
+  <section class="tarjeta">
+    <h2>Claves de API</h2>
+    <div id="claves"></div>
+  </section>
+
+</main>
+</div>
+
+<script>
+const API = "";
+let TOKEN = localStorage.getItem("panel_token") || "";
+
+function auth(){ return { "Authorization": "Bearer " + TOKEN }; }
+
+async function api(ruta, opts={}) {
+  const r = await fetch(API + ruta, {...opts, headers: {...(opts.headers||{}), ...auth(), "Content-Type":"application/json"}});
+  if (r.status === 401) { salir(); throw new Error("401"); }
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+
+function entrar(){
+  TOKEN = document.getElementById("token").value.trim();
+  if (!TOKEN) return;
+  localStorage.setItem("panel_token", TOKEN);
+  probarLogin();
+}
+function salir(){
+  localStorage.removeItem("panel_token");
+  document.getElementById("app").classList.add("oculto");
+  document.getElementById("login").classList.remove("oculto");
+}
+async function probarLogin(){
+  try {
+    await api("/api/estado");
+    document.getElementById("login").classList.add("oculto");
+    document.getElementById("app").classList.remove("oculto");
+    cargarTodo();
+    setInterval(cargarEstado, 10000);
+  } catch(e) {
+    document.getElementById("login-error").classList.remove("oculto");
+  }
+}
+
+function pill(ok, texto){
+  const cls = ok === true ? "ok" : ok === false ? "err" : "warn";
+  return `<span class="pill ${cls}">${texto}</span>`;
+}
+
+async function cargarEstado(){
+  const e = await api("/api/estado");
+  document.getElementById("estado-conexion").textContent =
+    `MCP activos: ${e.mcp_activos.length}/${e.mcp_total}` +
+    (e.claves_faltantes.length ? ` · faltan ${e.claves_faltantes.length} claves` : "");
+  const filas = Object.entries(e.proveedores_activos).map(([cap, nombre]) =>
+    `<div class="fila"><span>${cap.toUpperCase()}</span>${pill(!!nombre, nombre || "ninguno disponible")}</div>`
+  ).join("");
+  document.getElementById("resumen").innerHTML = filas;
+}
+
+async function cargarProveedores(){
+  const datos = await api("/api/proveedores");
+  const cont = document.getElementById("proveedores");
+  cont.innerHTML = "";
+  for (const cap of ["llm","stt","tts"]) {
+    const bloque = document.createElement("div");
+    bloque.style.marginBottom = "14px";
+    bloque.innerHTML = `<div style="font-size:12px;color:var(--tenue);margin-bottom:6px">${cap.toUpperCase()}</div>`;
+    const cadena = document.createElement("div");
+    cadena.className = "cadena";
+    cadena.dataset.cap = cap;
+    for (const nombre of datos[cap].orden) {
+      const item = datos[cap].catalogo.find(x => x.nombre === nombre) || {};
+      cadena.appendChild(crearChip(nombre, item.listo));
+    }
+    cadena.addEventListener("dragover", ev => ev.preventDefault());
+    cadena.addEventListener("drop", ev => onDrop(ev, cadena));
+    bloque.appendChild(cadena);
+    cont.appendChild(bloque);
+  }
+}
+function crearChip(nombre, listo){
+  const chip = document.createElement("div");
+  chip.className = "chip";
+  chip.draggable = true;
+  chip.dataset.nombre = nombre;
+  chip.innerHTML = `${listo ? "🟢" : "⚪"} ${nombre}`;
+  chip.addEventListener("dragstart", ev => {
+    ev.dataTransfer.setData("text/plain", nombre);
+    chip.classList.add("arrastrando");
+  });
+  chip.addEventListener("dragend", () => chip.classList.remove("arrastrando"));
+  return chip;
+}
+async function onDrop(ev, cadena){
+  ev.preventDefault();
+  const nombre = ev.dataTransfer.getData("text/plain");
+  const arrastrado = cadena.querySelector(`[data-nombre="${nombre}"]`) ||
+    document.querySelector(`.chip[data-nombre="${nombre}"]`);
+  if (arrastrado && arrastrado.parentElement !== cadena) return; // solo reordena dentro de su propia cadena, v1
+  const despues = [...cadena.children].find(c => {
+    const r = c.getBoundingClientRect();
+    return ev.clientX < r.left + r.width / 2;
+  });
+  cadena.insertBefore(arrastrado, despues || null);
+  const orden = [...cadena.children].map(c => c.dataset.nombre);
+  await api(`/api/proveedores/${cadena.dataset.cap}`, {method:"PUT", body: JSON.stringify({orden})});
+  cargarEstado();
+}
+
+async function cargarMcp(){
+  const lista = await api("/api/mcp");
+  const cont = document.getElementById("mcp");
+  cont.innerHTML = "";
+  for (const m of lista) {
+    const el = document.createElement("div");
+    el.className = "mcp-item";
+    const problema = m.falta_binario ? "falta binario" : (m.env_pendiente.length ? `falta ${m.env_pendiente.join(", ")}` : "");
+    el.innerHTML = `
+      <div>
+        <div>${m.nombre} <span style="color:var(--tenue);font-size:11px">(${m.categoria})</span></div>
+        <small>${m.descripcion}${problema ? " · " + problema : ""}</small>
+      </div>
+      <button class="switch ${m.activo ? "on" : ""}"></button>`;
+    el.querySelector("button").addEventListener("click", async (ev) => {
+      const activar = !m.activo;
+      await api(`/api/mcp/${m.nombre}/${activar ? "activar" : "desactivar"}`, {method:"POST"});
+      cargarMcp(); cargarEstado();
+    });
+    cont.appendChild(el);
+  }
+}
+async function crearMcp(){
+  const nombre = document.getElementById("nuevo-nombre").value.trim();
+  const descripcion = document.getElementById("nuevo-desc").value.trim();
+  if (!nombre) return;
+  try {
+    await api("/api/mcp/nuevo", {method:"POST", body: JSON.stringify({nombre, descripcion})});
+    document.getElementById("nuevo-nombre").value = "";
+    document.getElementById("nuevo-desc").value = "";
+    cargarMcp();
+  } catch(e){ alert("no se pudo crear: " + e.message); }
+}
+async function reiniciarVoz(){
+  try { await api("/api/servicio-voz/reiniciar", {method:"POST"}); alert("reiniciado"); }
+  catch(e){ alert("fallo: " + e.message); }
+}
+
+async function cargarClaves(){
+  const filas = await api("/api/claves");
+  const cont = document.getElementById("claves");
+  cont.innerHTML = "";
+  for (const f of filas) {
+    const el = document.createElement("div");
+    el.className = "fila claves-fila";
+    el.innerHTML = `
+      <div>${f.clave} <small style="color:var(--tenue)">usada por: ${f.usada_por.join(", ")}</small></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${pill(f.puesta, f.puesta ? f.valor_enmascarado : "falta")}
+        <input type="password" placeholder="nuevo valor" data-clave="${f.clave}">
+        <button class="btn">guardar</button>
+      </div>`;
+    el.querySelector("button").addEventListener("click", async () => {
+      const input = el.querySelector("input");
+      if (!input.value) return;
+      await api(`/api/claves/${f.clave}`, {method:"PUT", body: JSON.stringify({valor: input.value})});
+      input.value = "";
+      cargarClaves(); cargarEstado();
+    });
+    cont.appendChild(el);
+  }
+}
+
+function cargarTodo(){
+  cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves();
+}
+if (TOKEN) probarLogin(); else document.getElementById("login").classList.remove("oculto");
+</script>
+</body>
+</html>

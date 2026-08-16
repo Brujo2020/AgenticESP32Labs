@@ -64,6 +64,14 @@ def estado(nombre, entrada, activos):
     return f"{G}apagado{N}"
 
 
+def listar_silencioso():
+    """Igual que listar() pero sin imprimir: para panel_api.py y otros
+    consumidores programaticos. Devuelve (catalogo, config, activos)."""
+    cat, cfg = carga()
+    activos = cfg.get("tools_to_enable", []) or []
+    return cat, cfg, activos
+
+
 def listar():
     cat, cfg = carga()
     activos = cfg.get("tools_to_enable", []) or []

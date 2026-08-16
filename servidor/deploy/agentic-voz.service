@@ -1,0 +1,15 @@
+[Unit]
+Description=Agentic ESP32 — puente de voz (WebSocket, 8765)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/esp32-hud-idf/servidor
+ExecStart=/home/ubuntu/esp32-hud-idf/servidor/venv/bin/python3 websocket_bridge.py
+Restart=on-failure
+RestartSec=3
+EnvironmentFile=-/home/ubuntu/esp32-hud-idf/servidor/.env
+
+[Install]
+WantedBy=multi-user.target

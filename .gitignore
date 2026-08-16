@@ -11,3 +11,10 @@ __pycache__/
 *.pyc
 servidor/.env
 .git/_locks_viejos/
+
+# Ajustes que el panel web edita en caliente (brillo, pantallas, apariencia,
+# agentes...). Son estado de CADA maquina, no configuracion del proyecto.
+# Estuvieron dentro de config.yaml y eso rompia el despliegue: usar el panel
+# dejaba cambios locales y el siguiente 'git pull' abortaba.
+servidor/ajustes.yaml
+servidor/ajustes.yaml.tmp

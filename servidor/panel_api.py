@@ -310,9 +310,31 @@ AJUSTES_DEFAULT = {
 }
 
 
+# Los ajustes que edita el panel viven en su PROPIO fichero, no dentro de
+# config.yaml.
+#
+# Al principio se guardaban en config.yaml, y eso rompia el despliegue: ese
+# fichero esta versionado, asi que en cuanto alguien tocaba un ajuste desde el
+# panel el servidor quedaba con cambios locales y el siguiente 'git pull'
+# abortaba con "your local changes would be overwritten by merge". Es decir:
+# usar el panel impedia desplegar.
+#
+# config.yaml = configuracion que se versiona y se despliega (proveedores,
+# catalogo, MCP). ajustes.yaml = estado que edita el usuario en caliente y que
+# pertenece a cada maquina. Va en .gitignore.
+AJUSTES_PATH = AQUI / "ajustes.yaml"
+
+
 def _lee_ajustes() -> dict:
-    cfg = panel._config()
-    guardado = cfg.get("ajustes") or {}
+    guardado = {}
+    if AJUSTES_PATH.exists():
+        guardado = yaml.safe_load(AJUSTES_PATH.read_text()) or {}
+    else:
+        # Migracion desde donde vivian antes. Se lee una vez de config.yaml
+        # para no perder lo que el usuario ya hubiera configurado; el primer
+        # guardado posterior lo deja ya en ajustes.yaml.
+        guardado = (panel._config().get("ajustes") or {})
+
     base = copy.deepcopy(AJUSTES_DEFAULT)
     out = {}
     for k, v in base.items():
@@ -324,14 +346,11 @@ def _lee_ajustes() -> dict:
 
 
 def _guarda_ajustes(ajustes: dict):
-    ruta = panel.CONFIG_PATH
-    texto = ruta.read_text()
-    bloque = yaml.safe_dump({"ajustes": ajustes}, allow_unicode=True, sort_keys=False)
-    if re.search(r"\najustes:", texto):
-        texto = re.sub(r"\najustes:.*\Z", "\n" + bloque, texto, flags=re.S)
-    else:
-        texto = texto.rstrip("\n") + "\n\n" + bloque
-    ruta.write_text(texto)
+    # Escritura atomica: si el proceso muere a medias, el fichero anterior
+    # sigue intacto en vez de quedar truncado y dejar el panel sin arrancar.
+    tmp = AJUSTES_PATH.with_suffix(".yaml.tmp")
+    tmp.write_text(yaml.safe_dump(ajustes, allow_unicode=True, sort_keys=False))
+    tmp.replace(AJUSTES_PATH)
 
 
 @app.get("/api/ajustes", dependencies=router_dep)

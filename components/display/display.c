@@ -173,14 +173,92 @@ static void draw_char(int x, int y, char ch, uint16_t c, int e)
                         display_px(x + col*e + sx, y + row*e + sy, c);
 }
 
+// ============================================================
+//  UTF-8 -> ASCII de la fuente 5x7
+// ============================================================
+// font5x7 solo cubre ASCII 32..90 ('Z'). Todo lo demas se descartaba en
+// draw_char... pero display_text avanzaba 6 px IGUAL por cada byte. Como en
+// UTF-8 una letra acentuada son DOS bytes, cada tilde dejaba dos huecos en
+// blanco y descuadraba el resto de la linea; display_text_center ademas
+// centraba con strlen(), que cuenta bytes, asi que el texto quedaba corrido
+// hacia la izquierda. De ahi que "Peru" con tilde se viera roto.
+//
+// La solucion no es ignorar esos bytes sino traducirlos: en una pantalla de
+// 240 px con fuente de 5x7 no caben glifos acentuados, pero "PERU" se lee
+// perfectamente. Se hace aqui, en el unico sitio por el que pasa TODO el
+// texto del HUD, en vez de en cada origen (noticias, chat, vistas, clima...).
+//
+// Devuelve el caracter ya transliterado y deja *ps apuntando al siguiente.
+static char utf8_siguiente(const char **ps)
+{
+    const unsigned char *p = (const unsigned char *)*ps;
+    unsigned char b = *p;
+
+    if (b < 0x80) { *ps = (const char *)(p + 1); return (char)b; }
+
+    // Decodifica el punto de codigo y avanza los bytes que ocupe, para no
+    // volver a dejar huecos de continuacion como antes.
+    unsigned cp = 0; int n = 0;
+    if      ((b & 0xE0) == 0xC0) { cp = b & 0x1F; n = 1; }
+    else if ((b & 0xF0) == 0xE0) { cp = b & 0x0F; n = 2; }
+    else if ((b & 0xF8) == 0xF0) { cp = b & 0x07; n = 3; }
+    else { *ps = (const char *)(p + 1); return '?'; }   // byte suelto invalido
+
+    for (int i = 1; i <= n; i++) {
+        if ((p[i] & 0xC0) != 0x80) { *ps = (const char *)(p + 1); return '?'; }
+        cp = (cp << 6) | (p[i] & 0x3F);
+    }
+    *ps = (const char *)(p + n + 1);
+
+    switch (cp) {
+        case 0xC1: case 0xE1: case 0xC0: case 0xE0:
+        case 0xC4: case 0xE4: case 0xC2: case 0xE2: return 'A';
+        case 0xC9: case 0xE9: case 0xC8: case 0xE8:
+        case 0xCB: case 0xEB: case 0xCA: case 0xEA: return 'E';
+        case 0xCD: case 0xED: case 0xCC: case 0xEC:
+        case 0xCF: case 0xEF: case 0xCE: case 0xEE: return 'I';
+        case 0xD3: case 0xF3: case 0xD2: case 0xF2:
+        case 0xD6: case 0xF6: case 0xD4: case 0xF4: return 'O';
+        case 0xDA: case 0xFA: case 0xD9: case 0xF9:
+        case 0xDC: case 0xFC: case 0xDB: case 0xFB: return 'U';
+        case 0xD1: case 0xF1: return 'N';               // enye
+        case 0xC7: case 0xE7: return 'C';               // c cedilla
+        case 0xDD: case 0xFD: case 0xFF: return 'Y';
+        case 0xBF: return '?';                          // apertura de pregunta
+        case 0xA1: return '!';                          // apertura de admiracion
+        case 0xB0: case 0xBA: return 'O';               // grado / ordinal
+        case 0xAB: case 0xBB: return '"';               // comillas latinas
+        case 0x2018: case 0x2019: return '\'';          // comillas tipograficas
+        case 0x201C: case 0x201D: return '"';
+        case 0x2013: case 0x2014: return '-';           // guiones largos
+        case 0x20AC: return 'E';                        // euro
+        case 0x2026: return '.';                        // puntos suspensivos
+        default: return (cp < 0x80) ? (char)cp : '?';
+    }
+}
+
+// Numero de caracteres DIBUJABLES (no de bytes) de una cadena UTF-8.
+int display_text_largo(const char *s)
+{
+    int n = 0;
+    while (*s) { utf8_siguiente(&s); n++; }
+    return n;
+}
+
 void display_text(int x, int y, const char *s, uint16_t c, int e)
 {
-    while (*s) { draw_char(x, y, *s++, c, e); x += 6 * e; }
+    while (*s) {
+        char ch = utf8_siguiente(&s);
+        draw_char(x, y, ch, c, e);
+        x += 6 * e;
+    }
 }
 
 void display_text_center(int cx, int y, const char *s, uint16_t c, int e)
 {
-    display_text(cx - (int)strlen(s) * 3 * e, y, s, c, e);
+    // Con strlen() una linea acentuada se centraba corrida a la izquierda:
+    // contaba los bytes de continuacion como si fueran letras.
+    display_text(cx - display_text_largo(s) * 3 * e, y, s, c, e);
 }
 
 // esp_lcd_panel_draw_bitmap es ASINCRONA: encola la transferencia y vuelve.

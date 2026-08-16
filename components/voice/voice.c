@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/stream_buffer.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -36,6 +37,73 @@ static char s_mac[VOZ_TELE][VOZ_ANCHO];
 static int  s_mac_n = 0;
 static char s_cre[VOZ_TELE][VOZ_ANCHO];
 static int  s_cre_n = 0;
+
+// ============================================================
+//  Reproduccion de audio: la red NO toca el I2S directamente
+// ============================================================
+// Antes on_ws() llamaba a audio_play_pcm() dentro del propio manejador de
+// eventos del websocket. i2s_channel_write bloquea hasta que el DMA acepta
+// las muestras (~42 ms por cada trozo de 2048 bytes a 24 kHz), y durante ese
+// rato la tarea del websocket no lee del socket. Entre trozo y trozo el
+// buffer DMA se vaciaba -> underrun -> un chasquido por trozo. En el altavoz
+// se oia como un "ti-ti-ti-ti" rapido encima de la voz.
+//
+// Ahora el manejador solo copia a un stream buffer (no bloquea) y una tarea
+// aparte alimenta el I2S de forma continua. El colchon absorbe el jitter de
+// la red, que es justo lo que faltaba.
+#define AUDIO_BUF_BYTES   (16 * 1024)   // ~340 ms a 24 kHz 16-bit mono
+#define AUDIO_PREBUFFER   (4 * 1024)    // no empieza hasta tener este colchon
+#define AUDIO_TROZO       2048
+
+static StreamBufferHandle_t s_audio_sb = NULL;
+static volatile bool s_audio_desborde = false;
+
+static void tarea_audio(void *arg)
+{
+    static uint8_t buf[AUDIO_TROZO];
+    bool sonando = false;
+
+    while (1) {
+        if (!sonando) {
+            // Arranque de racha: esperar un colchon antes del primer trozo.
+            // Empezar con el buffer casi vacio garantiza un underrun en la
+            // primera decima de segundo de cada respuesta.
+            //
+            // El colchon se espera a mano y no con el trigger level del
+            // stream buffer: el trigger se aplica a TODAS las lecturas, y
+            // entonces los ultimos bytes de una respuesta (casi siempre
+            // menos de AUDIO_PREBUFFER) se quedarian atascados hasta la
+            // siguiente -- el final de una frase se oiria pegado al
+            // principio de la siguiente.
+            int espera = 0;
+            while (xStreamBufferBytesAvailable(s_audio_sb) < AUDIO_PREBUFFER
+                   && espera < 25) {                    // 250 ms como mucho
+                vTaskDelay(pdMS_TO_TICKS(10));
+                espera++;
+            }
+            sonando = true;
+        }
+
+        // Sin datos durante 150 ms: la racha termino. La proxima vez se
+        // vuelve a esperar el colchon.
+        size_t n = xStreamBufferReceive(s_audio_sb, buf, sizeof(buf),
+                                        pdMS_TO_TICKS(150));
+        if (n) {
+            audio_play_pcm(buf, n);
+        } else if (sonando) {
+            // Fin de la racha: callar el DMA. Sin esto se queda repitiendo en
+            // bucle el final de la frase (ver audio_silencio en audio.c).
+            audio_silencio();
+            sonando = false;
+        }
+
+        if (s_audio_desborde) {
+            s_audio_desborde = false;
+            ESP_LOGW(TAG, "audio: se descarto un trozo (llega mas rapido de lo "
+                          "que el altavoz puede reproducir)");
+        }
+    }
+}
 
 // ---- Protocolo v2 ----
 static vista_t s_vistas[VISTA_MAX];
@@ -318,8 +386,15 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_conn = false; ESP_LOGW(TAG, "desconectado"); break;
     case WEBSOCKET_EVENT_DATA:
-        if (e->op_code == 0x02) {                 // binario: audio de vuelta
-            audio_play_pcm(e->data_ptr, e->data_len);
+        if (e->op_code == 0x02 || e->op_code == 0x00) {
+            // Binario (0x02) o continuacion de un binario fragmentado (0x00):
+            // audio de vuelta. Solo se encola -- reproducir aqui bloquearia
+            // la lectura del socket y provocaria los chasquidos.
+            if (s_audio_sb && e->data_len > 0) {
+                size_t puesto = xStreamBufferSend(s_audio_sb, e->data_ptr,
+                                                  e->data_len, 0);
+                if (puesto < (size_t)e->data_len) s_audio_desborde = true;
+            }
         } else if (e->op_code == 0x01 && e->data_len > 2) {
             cJSON *j = cJSON_ParseWithLength(e->data_ptr, e->data_len);
             if (j) {
@@ -453,9 +528,25 @@ esp_err_t voice_init(const char *host, int port)
         .uri = uri,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 8000,
+        // El bridge manda el audio en trozos de 2048 bytes. Con el buffer por
+        // defecto (1024) cada trozo llegaba partido en dos eventos, doblando
+        // el numero de despertares por segundo de audio sin necesidad.
+        .buffer_size = 4096,
     };
     s_ws = esp_websocket_client_init(&cfg);
     if (!s_ws) return ESP_FAIL;
+
+    // El colchon de audio y su tarea, antes de arrancar el cliente: si el
+    // servidor empieza a mandar audio de inmediato, tienen que existir ya.
+    // Trigger level 1: se lee en cuanto haya algo. El colchon de arranque lo
+    // gestiona tarea_audio (ver alli por que no se usa el trigger level).
+    s_audio_sb = xStreamBufferCreate(AUDIO_BUF_BYTES, 1);
+    if (!s_audio_sb) {
+        ESP_LOGE(TAG, "sin memoria para el buffer de audio");
+        return ESP_ERR_NO_MEM;
+    }
+    xTaskCreate(tarea_audio, "audio_ws", 3072, NULL, 6, NULL);
+
     esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, on_ws, NULL);
     esp_err_t r = esp_websocket_client_start(s_ws);
     xTaskCreate(tarea_mic, "mic_ws", 4096, NULL, 5, NULL);

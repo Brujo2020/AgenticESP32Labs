@@ -110,18 +110,41 @@ static int ancho_seguro(int y, int x0)
 #define MARQ_FRAMES_CAR  4
 #define MARQ_PAUSA       18      // fotogramas quieto en cada extremo
 
+// Avanza 'n' caracteres UTF-8 (no bytes) dentro de una cadena. En espanol una
+// vocal acentuada ocupa dos bytes: cortar por bytes parte la letra por la
+// mitad y deja un byte suelto que se pinta como '?'.
+static const char *salta_chars(const char *s, int n)
+{
+    while (*s && n > 0) {
+        s++;
+        while ((*s & 0xC0) == 0x80) s++;    // saltar bytes de continuacion
+        n--;
+    }
+    return s;
+}
+
+// Copia como mucho 'n' caracteres UTF-8 (completos) en el buffer.
+static void copia_chars(char *dst, size_t cap, const char *src, int n)
+{
+    const char *fin = salta_chars(src, n);
+    size_t bytes = (size_t)(fin - src);
+    if (bytes > cap - 1) bytes = cap - 1;
+    memcpy(dst, src, bytes);
+    dst[bytes] = 0;
+}
+
 static void texto_recortado(int x, int y, const char *t, uint16_t c)
 {
-    char buf[64];
+    char buf[96];                            // hasta 3 bytes por caracter
     int n = ancho_seguro(y, x);
     if (n <= 0 || !t) return;
-    if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
 
-    int largo = (int)strlen(t);
+    // Se mide en CARACTERES dibujables, no en bytes: con strlen() una linea
+    // con tildes se creia mas larga de lo que ocupa y se recortaba de mas.
+    int largo = display_text_largo(t);
     int sobra = largo - n;
-    if (sobra <= 0) {                       // cabe entero: nada que animar
-        snprintf(buf, n + 1, "%s", t);
-        display_text(x, y, buf, c, 1);
+    if (sobra <= 0) {                       // cabe entera: nada que animar
+        display_text(x, y, t, c, 1);
         return;
     }
 
@@ -135,7 +158,7 @@ static void texto_recortado(int x, int y, const char *t, uint16_t c)
     else                                    desde = sobra;
     if (desde > sobra) desde = sobra;
 
-    snprintf(buf, n + 1, "%s", t + desde);
+    copia_chars(buf, sizeof(buf), salta_chars(t, desde), n);
     display_text(x, y, buf, c, 1);
 
     // Marca de continuacion mientras quede texto a la derecha: sin ella no

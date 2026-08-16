@@ -64,6 +64,16 @@ void display_corchetes(int r, uint16_t color);
 void display_fade(uint8_t factor);          // oscurece todo el framebuffer
 
 // ---------- Texto ----------
+// Las cadenas se interpretan como UTF-8 y se transliteran a la fuente 5x7:
+// vocales acentuadas, enye y signos de apertura se dibujan como su
+// equivalente sin acento (A E I O U N ? !) en vez de dejar huecos en blanco.
+// Ver utf8_siguiente() en display.c.
+
+// Numero de caracteres DIBUJABLES de una cadena UTF-8, no de bytes. Usar
+// esto y no strlen() para medir, centrar o recortar texto del HUD: en
+// espanol "PERU" con tilde son 5 bytes pero ocupa 4 huecos en pantalla.
+int display_text_largo(const char *s);
+
 void display_text(int x, int y, const char *s, uint16_t color, int escala);
 void display_text_center(int cx, int y, const char *s, uint16_t color, int escala);
 void display_text_glow(int cx, int y, const char *s, uint16_t color, int escala);

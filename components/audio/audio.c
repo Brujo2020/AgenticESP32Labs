@@ -126,6 +126,8 @@ void audio_beep(int freq_hz, int ms)
         }
         i2s_channel_write(s_tx, buf, sizeof(buf), &w, pdMS_TO_TICKS(300));
     }
+    // Sin esto el DMA se queda repitiendo el tono en bucle (ver audio_silencio).
+    audio_silencio();
 }
 
 size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms)
@@ -157,6 +159,28 @@ void audio_play_pcm(const void *pcm, size_t bytes)
     if (!s_ready || !pcm || !bytes) return;
     size_t w;
     i2s_channel_write(s_tx, pcm, bytes, &w, pdMS_TO_TICKS(2000));
+}
+
+// Deja los buffers DMA en silencio.
+//
+// Por que hace falta: el canal se creo sin 'auto_clear', asi que cuando el TX
+// se queda sin datos nuevos el DMA NO calla -- sigue emitiendo en bucle lo
+// ultimo que quedara en sus descriptores. Despues del beep de 1200 Hz eso
+// suena como un "ti-ti-ti-ti" rapidisimo: son dma_desc_num(6) x
+// dma_frame_num(240) = 1440 muestras = 60 ms de bucle, unas 16 repeticiones
+// por segundo, y no para hasta que llega audio nuevo.
+//
+// Se arregla escribiendo silencio en vez de activar auto_clear en la config
+// del canal porque el nombre de ese campo ha cambiado entre versiones de
+// ESP-IDF (auto_clear -> auto_clear_after_cb); esto funciona en todas.
+void audio_silencio(void)
+{
+    if (!s_ready) return;
+    // 2048 muestras (~85 ms) cubren de sobra los 1440 frames del anillo DMA.
+    static const int16_t ceros[512] = {0};
+    size_t w;
+    for (int i = 0; i < 4; i++)
+        i2s_channel_write(s_tx, ceros, sizeof(ceros), &w, pdMS_TO_TICKS(300));
 }
 
 void audio_set_volume(int pct)

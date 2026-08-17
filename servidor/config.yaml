@@ -17,16 +17,22 @@ proveedores:
   # llamando herramientas. Groq/nvidia quedan de respaldo por si Bedrock
   # tuviera un problema puntual (o si un dia se agota el credito).
   llm: [bedrock, groq, nvidia, mlx]
-  stt: [groq, mlx-whisper]
-  # PIPER PRIMERO, no Groq. El TTS de Groq es 'canopylabs/orpheus-v1-english':
-  # un modelo MONOLINGUE INGLES con voz inglesa ("austin"). Dandole texto en
-  # espanol lo pronuncia con fonetica inglesa -- de ahi que sonara tan mal.
-  # Piper con una voz es_ES es TTS neuronal en espanol de verdad, local, sin
-  # API ni limite de uso. Groq queda detras solo como ultimo recurso.
+  # Transcribe primero: mismo credito/cuenta AWS que Bedrock y Polly, y saca
+  # a Groq de la duda mientras se confirma si el problema de reconocimiento
+  # era el proveedor o el audio de origen. Groq queda de respaldo (gratis,
+  # rapido) y mlx-whisper local al final (sin red, sin coste).
+  stt: [transcribe, groq, mlx-whisper]
+  # POLLY PRIMERO: voz neuronal en espanol de verdad (Lucia, es-ES), en la
+  # misma nube que ya factura Bedrock, sin depender de que el .onnx de Piper
+  # este bien descargado en el servidor. Piper queda de respaldo local (sin
+  # coste, sin red) por si Polly fallara o se agotara el credito. El TTS de
+  # Groq es 'canopylabs/orpheus-v1-english': un modelo MONOLINGUE INGLES con
+  # voz inglesa ("austin"). Dandole texto en espanol lo pronuncia con
+  # fonetica inglesa -- de ahi que sonara tan mal -- por eso va ultimo.
   #
   # OJO: 'macos' NUNCA sirve de respaldo real en este servidor -- usa el
   # comando "say", que solo existe en macOS, y el servidor corre Ubuntu.
-  tts: [piper, groq, macos]
+  tts: [polly, piper, groq, macos]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
@@ -108,6 +114,11 @@ catalogo:
       description: "Anthropic directo — mejor razonamiento"
 
   stt:
+    transcribe:               # AWS · mismo credito que Bedrock/Polly
+      backend: "transcribe"
+      region: "us-east-1"
+      description: "Amazon Transcribe (streaming) — mismo cloud que Bedrock/Polly"
+
     groq:
       backend: "groq"
       # large-v3 (no 'turbo'). Turbo es ~2x mas rapido pero mide peor en
@@ -132,6 +143,13 @@ catalogo:
       api_key: "${OPENAI_API_KEY}"
 
   tts:
+    polly:                    # AWS · mismo credito que Bedrock
+      backend: "polly"
+      voice: "Lucia"          # es-ES neuronal. Alternativas: Conchita/Enrique (standard)
+      engine: "neural"
+      region: "us-east-1"
+      description: "AWS Polly (Lucia, es-ES neuronal) — mismo cloud que Bedrock"
+
     groq:                     # ULTIMO RECURSO: no habla espanol
       backend: "openai-compatible-wav"    # Groq solo devuelve WAV, nunca PCM crudo
       base_url: "https://api.groq.com/openai/v1"

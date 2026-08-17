@@ -144,6 +144,56 @@ class TTSPiper(ProveedorTTS):
         return pcm
 
 
+class TTSPolly(ProveedorTTS):
+    """AWS Polly -- voz neuronal en espanol, pagada con el credito de la
+    cuenta (mismas credenciales AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY que
+    usa Bedrock). Devuelve PCM 16-bit mono crudo pidiendo el SampleRate
+    exacto que el firmware espera -- a diferencia de Piper, no hace falta
+    reconvertir la frecuencia despues.
+    """
+    nombre = "polly"
+
+    def __init__(self, nombre="polly", cfg=None):
+        cfg = cfg or {}
+        self.nombre = nombre
+        self.voz = cfg.get("voice", "Lucia")     # Lucia = es-ES neuronal
+        self.engine = cfg.get("engine", "neural")
+        self.region = cfg.get("region") or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+        self._cliente = None
+
+    def disponible(self) -> bool:
+        try:
+            import boto3  # noqa: F401
+        except ImportError:
+            return False
+        return bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
+
+    def _boto(self):
+        if self._cliente is None:
+            import boto3
+            self._cliente = boto3.client("polly", region_name=self.region)
+        return self._cliente
+
+    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+        try:
+            cliente = self._boto()
+            # Polly solo acepta unas pocas tasas fijas para pcm: 8000/16000/
+            # 22050/24000. 24000 coincide con el SAMPLE_RATE del firmware,
+            # asi que no hace falta resamplear.
+            resp = cliente.synthesize_speech(
+                Text=texto,
+                OutputFormat="pcm",
+                VoiceId=self.voz,
+                Engine=self.engine,
+                SampleRate=str(sample_rate),
+                LanguageCode="es-ES",
+            )
+            return resp["AudioStream"].read()
+        except Exception as e:
+            detalle = str(e) or type(e).__name__
+            raise ErrorProveedor(f"{self.nombre}: {detalle}") from e
+
+
 class TTSOpenAICompatible(ProveedorTTS):
     """OpenAI, Azure OpenAI y equivalentes con /audio/speech que aceptan
     response_format=pcm directamente (el caso comun: devuelven PCM 16-bit
@@ -219,6 +269,7 @@ class TTSOpenAICompatibleWav(TTSOpenAICompatible):
 REGISTRO_TTS = {
     "macos": TTSMacOS,
     "piper": TTSPiper,
+    "polly": TTSPolly,
     "openai-compatible": TTSOpenAICompatible,
     "openai-compatible-wav": TTSOpenAICompatibleWav,
 }

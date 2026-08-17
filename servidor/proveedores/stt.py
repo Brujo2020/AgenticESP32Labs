@@ -1,5 +1,5 @@
 """Voz -> texto. Local primero (privado, sin coste), nube como respaldo."""
-import os, httpx
+import asyncio, os, wave, httpx
 from .base import ProveedorSTT, ErrorProveedor
 from .llm import _expande
 
@@ -58,6 +58,80 @@ class STTGroq(ProveedorSTT):
             raise ErrorProveedor(f"{self.nombre}: {e}") from e
 
 
+class STTTranscribe(ProveedorSTT):
+    """Amazon Transcribe (streaming) -- mismo credito AWS que Bedrock/Polly.
+
+    A diferencia de Groq (un POST y listo), Transcribe streaming necesita una
+    conexion bidireccional: se manda el audio ya grabado en trozos por un
+    lado, y se van recibiendo eventos con el texto por el otro, hasta que se
+    cierra el canal de audio. No es mas rapido que Groq (agrega el overhead
+    de abrir el stream), pero corre en la misma nube que ya factura
+    Bedrock/Polly y evita depender de la clave de Groq para STT.
+
+    Requiere el paquete 'amazon-transcribe' (SDK aparte, no es boto3):
+        pip install amazon-transcribe
+    """
+    nombre = "transcribe"
+    _IDIOMAS = {"es": "es-ES", "en": "en-US"}
+
+    def __init__(self, nombre="transcribe", cfg=None):
+        cfg = cfg or {}
+        self.nombre = nombre
+        self.region = cfg.get("region") or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+
+    def disponible(self) -> bool:
+        try:
+            import amazon_transcribe  # noqa: F401
+        except ImportError:
+            return False
+        return bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
+
+    def transcribir(self, wav_path, idioma="es") -> str:
+        # El resto del bridge llama a esto con asyncio.to_thread(), es decir
+        # ya estamos en un hilo aparte -- asyncio.run() puede abrir su propio
+        # loop aqui sin chocar con el loop principal del servidor.
+        try:
+            return asyncio.run(self._transcribir_async(wav_path, idioma))
+        except Exception as e:
+            detalle = str(e) or type(e).__name__
+            raise ErrorProveedor(f"{self.nombre}: {detalle}") from e
+
+    async def _transcribir_async(self, wav_path, idioma) -> str:
+        from amazon_transcribe.client import TranscribeStreamingClient
+        from amazon_transcribe.handlers import TranscriptResultStreamHandler
+
+        with wave.open(wav_path, "rb") as w:
+            tasa = w.getframerate()
+            pcm = w.readframes(w.getnframes())
+
+        cliente = TranscribeStreamingClient(region=self.region)
+        stream = await cliente.start_stream_transcription(
+            language_code=self._IDIOMAS.get(idioma, "es-ES"),
+            media_sample_rate_hz=tasa,
+            media_encoding="pcm",
+        )
+
+        texto_final = []
+
+        class _Handler(TranscriptResultStreamHandler):
+            async def handle_transcript_event(self, transcript_event):
+                for resultado in transcript_event.transcript.results:
+                    if not resultado.is_partial:
+                        for alt in resultado.alternatives:
+                            texto_final.append(alt.transcript)
+
+        handler = _Handler(stream.output_stream)
+
+        async def _manda_audio():
+            trozo = 1024 * 4
+            for i in range(0, len(pcm), trozo):
+                await stream.input_stream.send_audio_event(audio_chunk=pcm[i:i + trozo])
+            await stream.input_stream.end_stream()
+
+        await asyncio.gather(_manda_audio(), handler.handle_events())
+        return " ".join(texto_final).strip()
+
+
 class STTOpenAICompatible(ProveedorSTT):
     """Cualquier endpoint con /audio/transcriptions: OpenAI, Azure, local."""
     def __init__(self, nombre, cfg):
@@ -86,5 +160,6 @@ class STTOpenAICompatible(ProveedorSTT):
 REGISTRO_STT = {
     "mlx-whisper": STTWhisperMLX,
     "groq": STTGroq,
+    "transcribe": STTTranscribe,
     "openai-compatible": STTOpenAICompatible,
 }

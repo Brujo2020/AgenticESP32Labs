@@ -8,7 +8,7 @@ Converse API), asi que va en una clase aparte (ver LLMBedrock) que traduce
 mensajes/herramientas en ambas direcciones para que agente.py no tenga que
 saber que el proveedor activo cambio.
 """
-import asyncio, os, json, httpx
+import asyncio, os, json, re, httpx
 from .base import ProveedorLLM, ErrorProveedor
 
 
@@ -55,10 +55,43 @@ class LLMCompatibleOpenAI(ProveedorLLM):
                 json=cuerpo,
             )
 
+    _RETRY_TXT = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
+    _ESPERA_MAX = 10.0   # por encima de esto, mejor degradar al siguiente proveedor
+
+    @classmethod
+    def _espera_429(cls, r) -> float | None:
+        """Segundos a esperar antes de reintentar un 429, si la API lo dice."""
+        cabecera = r.headers.get("retry-after")
+        if cabecera:
+            try:
+                return float(cabecera)
+            except ValueError:
+                pass
+        m = cls._RETRY_TXT.search(r.text)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+        return None
+
     async def chat_completo(self, mensajes, herramientas=None) -> dict:
         """Devuelve el mensaje entero para poder leer tool_calls."""
         try:
             r = await self._llama(mensajes, herramientas)
+            if r.status_code == 429:
+                # Un rate-limit de "espera unos segundos" (Groq free tier lo
+                # sufre seguido: TPM bajo) NO deberia tumbar toda la
+                # respuesta y caer en cascada a nvidia/mlx -- en muchos
+                # entornos (este Mac en local, sin servidor mlx corriendo)
+                # esos dos tambien fallan, y el usuario se queda sin
+                # respuesta pudiendo haber esperado unos segundos y listo.
+                # Un solo reintento, acotado a _ESPERA_MAX segundos, resuelve
+                # la mayoria de estos casos sin degradar de proveedor.
+                espera = self._espera_429(r)
+                if espera is not None and espera <= self._ESPERA_MAX:
+                    await asyncio.sleep(espera)
+                    r = await self._llama(mensajes, herramientas)
             if r.status_code == 400 and herramientas and "tool_use_failed" in r.text:
                 # El modelo a veces alucina la sintaxis del tool-call (mete
                 # el JSON de argumentos dentro del NOMBRE de la funcion, p.ej.

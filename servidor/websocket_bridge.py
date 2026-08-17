@@ -47,12 +47,22 @@ async def arranca_agente():
 
 
 def pcm_a_wav(pcm: bytes) -> str:
+    # Antepone ~200ms de silencio antes del audio real. El ESP32 tarda un
+    # poco en "engancharse" al grabar tras el gesto de activacion, y el
+    # arranque abrupto del audio (sin margen antes) hace que el STT pierda
+    # o distorsione el primer fonema -- confirmado porque el mismo sintoma
+    # ("que hora es" mal transcrito) aparece igual con Groq Whisper y con
+    # Amazon Transcribe, dos motores distintos: el problema esta en el
+    # audio de origen, no en el proveedor de STT. Esto no recupera el
+    # fonema si de verdad se perdio en el firmware, pero evita que el
+    # arranque brusco se lea como ruido/artefacto.
+    silencio = b"\x00" * (SAMPLE_RATE // 5 * 2)   # ~200ms, 16-bit mono
     f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     with wave.open(f.name, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SAMPLE_RATE)
-        w.writeframes(pcm)
+        w.writeframes(silencio + pcm)
     return f.name
 
 

@@ -147,11 +147,17 @@ class TTSPiper(ProveedorTTS):
 class TTSPolly(ProveedorTTS):
     """AWS Polly -- voz neuronal en espanol, pagada con el credito de la
     cuenta (mismas credenciales AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY que
-    usa Bedrock). Devuelve PCM 16-bit mono crudo pidiendo el SampleRate
-    exacto que el firmware espera -- a diferencia de Piper, no hace falta
-    reconvertir la frecuencia despues.
+    usa Bedrock).
+
+    OJO: el formato OutputFormat="pcm" de Polly SOLO acepta 8000 u 16000 Hz
+    de SampleRate -- pedirle 24000 (lo que espera el firmware) con pcm no es
+    una combinacion valida. Sin este aviso, se pedia 24000 directo y el
+    audio llegaba corrupto (sonaba a ruido/estatica, no a voz). Se pide
+    siempre a 16000 Hz (soportado) y se resamplea con audioop, igual que ya
+    hace TTSPiper con las voces que no nacen a 24000 Hz.
     """
     nombre = "polly"
+    _TASA_POLLY = 16000     # unica tasa "grande" que Polly acepta con pcm
 
     def __init__(self, nombre="polly", cfg=None):
         cfg = cfg or {}
@@ -177,21 +183,23 @@ class TTSPolly(ProveedorTTS):
     def sintetizar(self, texto, sample_rate=24000) -> bytes:
         try:
             cliente = self._boto()
-            # Polly solo acepta unas pocas tasas fijas para pcm: 8000/16000/
-            # 22050/24000. 24000 coincide con el SAMPLE_RATE del firmware,
-            # asi que no hace falta resamplear.
             resp = cliente.synthesize_speech(
                 Text=texto,
                 OutputFormat="pcm",
                 VoiceId=self.voz,
                 Engine=self.engine,
-                SampleRate=str(sample_rate),
+                SampleRate=str(self._TASA_POLLY),
                 LanguageCode="es-ES",
             )
-            return resp["AudioStream"].read()
+            pcm = resp["AudioStream"].read()
         except Exception as e:
             detalle = str(e) or type(e).__name__
             raise ErrorProveedor(f"{self.nombre}: {detalle}") from e
+        if not pcm:
+            raise ErrorProveedor(f"{self.nombre}: no devolvio audio")
+        if self._TASA_POLLY != sample_rate:
+            pcm, _ = audioop.ratecv(pcm, 2, 1, self._TASA_POLLY, sample_rate, None)
+        return pcm
 
 
 class TTSOpenAICompatible(ProveedorTTS):

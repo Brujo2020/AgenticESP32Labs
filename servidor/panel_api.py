@@ -20,12 +20,13 @@ import os
 import re
 import secrets
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
 
 import websockets
 import yaml
-from fastapi import Depends, FastAPI, HTTPException, Header
+from fastapi import Depends, FastAPI, HTTPException, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -65,6 +66,57 @@ router_dep = [Depends(_requiere_token)]
 
 
 # ================================================================
+#  Historial de cambios — un log append-only por cada escritura desde el
+#  panel (Fase 1 de 001-panel-administracion-mcp/tasks.md, item pendiente).
+#
+#  Un JSONL, no un YAML/DB: cada linea es un evento independiente, se puede
+#  hacer tail sin parsear el fichero entero, y una linea a medio escribir
+#  (proceso muerto durante el flush) no invalida las anteriores. Vive fuera
+#  de config.yaml/ajustes.yaml a proposito -- es un log, no estado que se
+#  vuelva a leer para decidir comportamiento.
+# ================================================================
+HISTORIAL_PATH = AQUI / "config_historial.jsonl"
+HISTORIAL_MAX_LINEAS = 500  # recorte simple para que el fichero no crezca sin limite
+
+
+def _historial(accion: str, detalle: dict | None = None):
+    linea = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "accion": accion,
+        "detalle": detalle or {},
+    }
+    try:
+        with HISTORIAL_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(linea, ensure_ascii=False) + "\n")
+    except OSError as e:
+        # Un fallo al loguear no puede tumbar la escritura real que lo motivo.
+        log_hist.warning("no se pudo escribir en el historial: %s", e)
+
+
+def _historial_leer(n: int = 50) -> list[dict]:
+    if not HISTORIAL_PATH.exists():
+        return []
+    lineas = HISTORIAL_PATH.read_text(encoding="utf-8").splitlines()[-n:]
+    out = []
+    for l in lineas:
+        try:
+            out.append(json.loads(l))
+        except json.JSONDecodeError:
+            continue
+    out.reverse()  # mas reciente primero, como se espera de un log en el panel
+    return out
+
+
+import logging  # noqa: E402
+log_hist = logging.getLogger("panel_api.historial")
+
+
+@app.get("/api/historial", dependencies=router_dep)
+def historial(n: int = 50):
+    return _historial_leer(min(n, HISTORIAL_MAX_LINEAS))
+
+
+# ================================================================
 #  Estado general
 # ================================================================
 @app.get("/api/salud")
@@ -73,8 +125,7 @@ def salud():
     return {"ok": True}
 
 
-@app.get("/api/estado", dependencies=router_dep)
-async def estado():
+async def _estado_dict() -> dict:
     from proveedores import cadenas_desde_config
 
     cfg = panel._config()
@@ -89,6 +140,47 @@ async def estado():
         "mcp_total": len(mcps_cli.carga()[0]),
         "claves_faltantes": [f["clave"] for f in panel.claves_estado() if not f["puesta"]],
     }
+
+
+@app.get("/api/estado", dependencies=router_dep)
+async def estado():
+    return await _estado_dict()
+
+
+# ================================================================
+#  Estado en vivo por WebSocket (Fase 2, item pendiente de tasks.md: "vista
+#  de logs recientes" / estado sin depender del polling REST cada 10s).
+#
+#  El token va por query param (?token=...) en vez de header 'Authorization':
+#  el WebSocket API del navegador no deja mandar cabeceras custom al abrir la
+#  conexion. Sigue siendo el mismo PANEL_TOKEN, solo que viaja en la URL --
+#  aceptable detras de TLS (wss://), igual que ya se documenta para el token
+#  en localStorage (ver notas de Fase 1 en tasks.md).
+#
+#  Cada mensaje enviado es {"estado": <lo de /api/estado>, "historial": [...]}
+#  -- el panel ya no necesita dos llamadas ni el setInterval de 10s.
+# ================================================================
+@app.websocket("/api/ws/estado")
+async def ws_estado(ws: WebSocket, token: str = Query(default="")):
+    if not TOKEN or not secrets.compare_digest(token, TOKEN):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    ultimo_historial = None
+    try:
+        while True:
+            historial_actual = _historial_leer(20)
+            # Solo se reenvia el historial si cambio -- el estado siempre se
+            # manda porque MCP activos/proveedores pueden cambiar sin pasar
+            # por un endpoint que loguee (ej: un proveedor se degrada solo).
+            payload = {"estado": await _estado_dict()}
+            if historial_actual != ultimo_historial:
+                payload["historial"] = historial_actual
+                ultimo_historial = historial_actual
+            await ws.send_text(json.dumps(payload))
+            await asyncio.sleep(3)
+    except WebSocketDisconnect:
+        pass
 
 
 # ================================================================
@@ -109,6 +201,7 @@ def poner_clave(nombre: str, body: ClaveIn):
     actuales[nombre] = body.valor
     escribe(actuales)
     os.environ[nombre] = body.valor
+    _historial("clave.puesta", {"clave": nombre})  # nunca el valor en claro
     return {"ok": True}
 
 
@@ -117,6 +210,7 @@ def borrar_clave(nombre: str):
     actuales = lee_todas()
     actuales.pop(nombre, None)
     escribe(actuales)
+    _historial("clave.borrada", {"clave": nombre})
     return {"ok": True}
 
 
@@ -160,6 +254,7 @@ def reordenar_proveedores(capacidad: str, body: OrdenIn):
         raise HTTPException(400, f"no estan en el catalogo: {', '.join(desconocidos)}")
     cfg.setdefault("proveedores", {})[capacidad] = body.orden
     panel.guarda_proveedores(cfg)
+    _historial("proveedores.reordenados", {"capacidad": capacidad, "orden": body.orden})
     return {"ok": True, "orden": body.orden}
 
 
@@ -202,6 +297,7 @@ def _alterna_por_nombre(nombre: str, quiere_activo: bool):
     ya_activo = nombre in (cfg.get("tools_to_enable") or [])
     if ya_activo != quiere_activo:
         mcps_cli.alterna(posicion, orden, cfg)
+        _historial("mcp.activado" if quiere_activo else "mcp.desactivado", {"nombre": nombre})
     return {"ok": True, "nombre": nombre, "activo": quiere_activo, "reinicio_pendiente": True}
 
 
@@ -225,6 +321,7 @@ def mcp_nuevo(body: MCPNuevoIn):
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    _historial("mcp.creado", {"nombre": body.nombre, "categoria": body.categoria})
     return {"ok": True, "archivo": str(ruta), "reinicio_pendiente": True}
 
 
@@ -265,6 +362,7 @@ def reiniciar_servicio_voz():
         raise HTTPException(501, "systemctl no disponible en este host")
     except subprocess.CalledProcessError as e:
         raise HTTPException(500, f"fallo al reiniciar: {e.stderr or e}")
+    _historial("servicio_voz.reiniciado", {})
     return {"ok": True}
 
 
@@ -370,6 +468,7 @@ def ajustes_put(body: AjustesIn):
         raise HTTPException(400, f"seccion desconocida: {body.seccion}")
     actuales[body.seccion] = body.valores
     _guarda_ajustes(actuales)
+    _historial("ajustes.guardados", {"seccion": body.seccion})
     return {"ok": True, "ajustes": actuales}
 
 
@@ -427,6 +526,7 @@ async def dispositivo_aplicar(body: DispositivoConfigIn):
     actuales = _lee_ajustes()
     actuales["dispositivo"].update(args)
     _guarda_ajustes(actuales)
+    _historial("dispositivo.aplicado", args)
     return {"ok": True, "resultado": v}
 
 
@@ -448,6 +548,7 @@ async def dispositivo_pantallas():
     v = await _control_llama("pantallas", {"activas": activas, "orden": orden})
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
+    _historial("dispositivo.pantallas_aplicadas", {"activas": activas, "orden": orden})
     return {"ok": True, "resultado": v}
 
 
@@ -477,6 +578,7 @@ async def dispositivo_reiniciar():
     v = await _control_llama("reiniciar", {})
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
+    _historial("dispositivo.reiniciado", {})
     return {"ok": True, "resultado": v}
 
 

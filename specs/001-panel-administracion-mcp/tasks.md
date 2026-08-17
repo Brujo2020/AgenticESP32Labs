@@ -27,7 +27,10 @@ comprobable por separado.
       sin reiniciar (ver nota de Fase 0).
 - [x] `.env` + resolución de credenciales, endpoint que guarda sin devolver
       el valor en claro (reusa `nucleo/entorno.py`, ya existente).
-- [ ] Historial de cambios (`config_historial.jsonl`), un log por escritura. **Pendiente.**
+- [x] Historial de cambios (`config_historial.jsonl`), un log por escritura
+      (`_historial()` en cada endpoint de PUT/POST/DELETE, `GET /api/historial`
+      para leerlo). JSONL append-only, recorte a las ultimas 500 lineas,
+      fuera de git (ver `.gitignore`).
 - [x] Auth: token unico (`PANEL_TOKEN`) por header `Authorization: Bearer`.
       **Simplificado de plan.md**: sin cookie de sesion firmada todavia (el
       front guarda el token en `localStorage` y lo manda en cada request) —
@@ -46,7 +49,11 @@ comprobable por separado.
 - [x] Reordenar cadenas de proveedores con drag-and-drop nativo (HTML5 DnD,
       sin libreria — mas liviano que dnd-kit para este alcance).
 - [x] Formulario de credenciales (campos enmascarados).
-- [ ] Vista de logs recientes (consume el WebSocket de estado del panel_api). **Pendiente** — panel_api no tiene todavia el WebSocket de estado en vivo, solo REST con polling cada 10s.
+- [x] Vista de logs recientes (consume el WebSocket de estado del panel_api).
+      `GET /api/ws/estado` empuja `{estado, historial}` cada 3s (token por
+      query param, el navegador no deja mandar Authorization al abrir un WS);
+      el front cae a REST + polling de 10s si el WS falla 3 veces seguidas
+      (proxy sin soporte ws, etc).
 - [x] Pantalla "nodo MCP nuevo" — ya no es placeholder: llama a
       `sdk_mcp.generador.crear_mcp` (002 quedo resuelto en la misma pasada).
 
@@ -59,7 +66,8 @@ comprobable por separado.
       aqui — requiere desplegar primero.
 
 ## Fase 4 — documentación
-- [ ] Actualizar `MCP.md`/`CONECTAR_AGENTES.md` con "asi se administra desde
-      el panel" como primera opcion.
+- [x] Actualizar `MCP.md`/`CONECTAR_AGENTES.md` con "asi se administra desde
+      el panel" como primera opcion, y mencion del WS de estado + historial.
 - [ ] `claude/servidor-backend.md` (memoria del proyecto): apuntar la URL del
-      panel y cómo entrar una vez desplegado.
+      panel y cómo entrar una vez desplegado. **Sigue pendiente**: requiere la
+      URL real de despliegue (EC2), que no existe todavia en este repo.

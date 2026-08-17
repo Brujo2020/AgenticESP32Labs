@@ -9,7 +9,9 @@ Si el servidor tiene el panel corriendo (`servidor/panel_api.py`, ver
 - Activas/desactivas cualquier MCP del catalogo con un switch.
 - Creas un MCP nuevo con un formulario -- llama al mismo generador que el
   atajo de CLI de mas abajo, asi que el resultado es identico.
-- Ves de un vistazo cuales estan activos y cuales fallaron al arrancar.
+- Ves de un vistazo cuales estan activos y cuales fallaron al arrancar,
+  con el estado del ESP32 en vivo (WebSocket, sin refrescar la pagina) y
+  un historial de los ultimos cambios hechos desde el panel.
 
 No reemplaza `mcps_cli.py`/`consola.py` -- los reusa por debajo, asi que
 todo lo de esta guia sigue siendo valido si prefieres terminal.

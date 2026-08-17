@@ -117,9 +117,12 @@ exponerlo fuera de tu LAN hace falta TLS y un token compartido.
 Esto sigue siendo cierto ahora que el servidor esta en una IP publica de
 AWS -- el puerto 8765 (voz) no tiene login. El **panel de administracion**
 (`servidor/panel_api.py`, puerto 8766) es distinto: ese si pide token
-(`PANEL_TOKEN`) para leer o cambiar cualquier cosa. Ver
-`servidor/deploy/README.md` para desplegarlo y `specs/001-panel-administracion-mcp/`
-para el resto del plan (TLS, historial de cambios, etc. siguen pendientes).
+(`PANEL_TOKEN`) para leer o cambiar cualquier cosa, ve el estado del ESP32
+en vivo por WebSocket (`/api/ws/estado`, sin el polling de 10s de antes) y
+registra cada cambio en `servidor/config_historial.jsonl` (pestaña "Estado"
+del panel → "Cambios recientes"). Ver `servidor/deploy/README.md` para
+desplegarlo y `specs/001-panel-administracion-mcp/` para el resto del plan
+(TLS real, hot-reload sin reiniciar el proceso, siguen pendientes).
 
 ---
 

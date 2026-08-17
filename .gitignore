@@ -18,3 +18,7 @@ servidor/.env
 # dejaba cambios locales y el siguiente 'git pull' abortaba.
 servidor/ajustes.yaml
 servidor/ajustes.yaml.tmp
+
+# Historial de cambios del panel (config_historial.jsonl): log de cada
+# maquina, no algo que se versione ni se despliegue.
+servidor/config_historial.jsonl

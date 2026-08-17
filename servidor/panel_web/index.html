@@ -361,8 +361,13 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
   <!-- ESTADO -->
   <section id="v-estado" class="vista activa">
     <div class="tarjeta glass">
-      <h2>Estado general</h2>
+      <h2>Estado general<small id="estado-modo">conectando…</small></h2>
       <div id="resumen"></div>
+    </div>
+    <div class="tarjeta glass">
+      <h2>Cambios recientes</h2>
+      <div class="sub">Cada escritura desde este panel queda en un log (config_historial.jsonl), mas reciente primero.</div>
+      <div id="historial-lista" style="display:flex;flex-direction:column;gap:2px"></div>
     </div>
     <div class="tarjeta glass">
       <h2>Servicio de voz</h2>
@@ -573,6 +578,7 @@ function entrar(){
 }
 function salir(){
   localStorage.removeItem("panel_token");
+  if (WS_ESTADO) { WS_REINTENTOS = 999; WS_ESTADO.close(); WS_ESTADO = null; }
   document.getElementById("app").classList.add("oculto");
   document.getElementById("login").classList.remove("oculto");
 }
@@ -582,7 +588,7 @@ async function probarLogin(){
     document.getElementById("login").classList.add("oculto");
     document.getElementById("app").classList.remove("oculto");
     cargarTodo();
-    setInterval(cargarEstado, 10000);
+    abrirWsEstado();
   } catch(e) {
     document.getElementById("login-error").classList.remove("oculto");
   }
@@ -604,10 +610,7 @@ function pill(ok, texto){
 }
 
 // ---------------- estado ----------------
-async function cargarEstado(){
-  const e = await api("/api/estado");
-  const dot = document.querySelector("#estado-conexion .dot");
-  dot.classList.add("on");
+function pintarEstado(e){
   document.getElementById("estado-conexion").innerHTML =
     `<span class="dot on"></span>MCP activos: ${e.mcp_activos.length}/${e.mcp_total}` +
     (e.claves_faltantes.length ? ` · faltan ${e.claves_faltantes.length} claves` : "");
@@ -615,6 +618,56 @@ async function cargarEstado(){
     `<div class="fila"><span class="titulo">${cap.toUpperCase()}</span>${pill(!!nombre, nombre || "ninguno disponible")}</div>`
   ).join("");
   document.getElementById("resumen").innerHTML = filas;
+}
+function pintarHistorial(lista){
+  const cont = document.getElementById("historial-lista");
+  if (!lista || !lista.length) { cont.innerHTML = `<div class="sub">sin cambios registrados todavía</div>`; return; }
+  cont.innerHTML = lista.map(h => {
+    const hora = (h.ts || "").replace("T", " ").replace(/\+.*/, "").slice(0, 19);
+    const detalle = h.detalle && Object.keys(h.detalle).length
+      ? " — " + Object.entries(h.detalle).map(([k,v]) => `${k}: ${Array.isArray(v)?v.join(", "):v}`).join(", ")
+      : "";
+    return `<div class="fila"><span class="titulo" style="font-family:var(--font-mono);font-size:12px">${h.accion}${detalle}</span><small>${hora}</small></div>`;
+  }).join("");
+}
+// REST, usado como respaldo si el WebSocket no conecta (proxy sin soporte ws, etc).
+async function cargarEstado(){
+  pintarEstado(await api("/api/estado"));
+}
+
+// ---------------- estado en vivo (WebSocket) ----------------
+// Sustituye al polling cada 10s: un solo socket que empuja estado (siempre)
+// e historial (solo cuando cambia). Si falla al conectar, se cae de vuelta a
+// REST con setInterval para no dejar la pestaña de Estado muerta.
+let WS_ESTADO = null, WS_REINTENTOS = 0;
+function abrirWsEstado(){
+  const protocolo = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${protocolo}//${location.host}/api/ws/estado?token=${encodeURIComponent(TOKEN)}`;
+  const ws = new WebSocket(url);
+  WS_ESTADO = ws;
+  ws.onopen = () => { WS_REINTENTOS = 0; document.getElementById("estado-modo").textContent = "en vivo"; };
+  ws.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    if (d.estado) pintarEstado(d.estado);
+    if (d.historial) pintarHistorial(d.historial);
+  };
+  ws.onclose = () => {
+    document.getElementById("estado-modo").textContent = "reconectando…";
+    WS_REINTENTOS++;
+    if (WS_REINTENTOS <= 3) {
+      setTimeout(abrirWsEstado, 2000 * WS_REINTENTOS);
+    } else {
+      // Se rinde con el WS y vuelve a polling REST -- mejor una pestaña
+      // que refresca cada 10s que una que se queda congelada para siempre.
+      document.getElementById("estado-modo").textContent = "polling (sin WS)";
+      cargarEstado(); cargarHistorial();
+      setInterval(() => { cargarEstado(); cargarHistorial(); }, 10000);
+    }
+  };
+  ws.onerror = () => ws.close();
+}
+async function cargarHistorial(){
+  pintarHistorial(await api("/api/historial?n=30"));
 }
 
 // ---------------- proveedores ----------------
@@ -1124,7 +1177,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function cargarTodo(){
-  cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarAjustes();
+  cargarEstado(); cargarHistorial(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarAjustes();
   sincronizaDispositivo();
   setInterval(sincronizaDispositivo, 3000);
 }

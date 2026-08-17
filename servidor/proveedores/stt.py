@@ -1,7 +1,42 @@
 """Voz -> texto. Local primero (privado, sin coste), nube como respaldo."""
-import asyncio, os, wave, httpx
+import asyncio, os, threading, wave, httpx
 from .base import ProveedorSTT, ErrorProveedor
 from .llm import _expande
+
+
+class _LoopDeFondo:
+    """Un solo event loop de asyncio, persistente, en su propio hilo.
+
+    STTTranscribe necesita correr codigo async (el SDK de Amazon Transcribe
+    no tiene version sincrona), pero el resto del servidor (websocket_bridge,
+    el pool de MCP) ya vive en SU PROPIO event loop principal. Crear y
+    destruir un event loop nuevo por cada transcripcion (via asyncio.run()
+    dentro del hilo que usa asyncio.to_thread) chocaba con los generadores
+    async del pool de MCP -- un "RuntimeError: Attempted to exit cancel
+    scope in a different task" intermitente que rompia el turno de voz a
+    medias (por eso a veces no sonaba nada, o el texto salia corrupto: el
+    turno se interrumpia en medio del proceso, no despues).
+
+    Con un solo loop de fondo, reusado en cada llamada en vez de crear uno
+    nuevo cada vez, se evita esa interferencia con el loop principal.
+    """
+    _loop = None
+    _hilo = None
+    _candado = threading.Lock()
+
+    @classmethod
+    def _obten_loop(cls):
+        with cls._candado:
+            if cls._loop is None:
+                cls._loop = asyncio.new_event_loop()
+                cls._hilo = threading.Thread(target=cls._loop.run_forever, daemon=True)
+                cls._hilo.start()
+            return cls._loop
+
+    @classmethod
+    def ejecuta(cls, coro):
+        loop = cls._obten_loop()
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 class STTWhisperMLX(ProveedorSTT):
@@ -87,11 +122,12 @@ class STTTranscribe(ProveedorSTT):
         return bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
 
     def transcribir(self, wav_path, idioma="es") -> str:
-        # El resto del bridge llama a esto con asyncio.to_thread(), es decir
-        # ya estamos en un hilo aparte -- asyncio.run() puede abrir su propio
-        # loop aqui sin chocar con el loop principal del servidor.
+        # NO usar asyncio.run() aqui: crear/cerrar un event loop nuevo por
+        # llamada chocaba con el pool de MCP del proceso principal (ver
+        # _LoopDeFondo mas arriba). Se ejecuta en el loop persistente de
+        # fondo en su lugar.
         try:
-            return asyncio.run(self._transcribir_async(wav_path, idioma))
+            return _LoopDeFondo.ejecuta(self._transcribir_async(wav_path, idioma))
         except Exception as e:
             detalle = str(e) or type(e).__name__
             raise ErrorProveedor(f"{self.nombre}: {detalle}") from e

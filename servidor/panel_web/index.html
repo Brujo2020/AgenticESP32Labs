@@ -461,6 +461,14 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
       <button class="btn primario" style="margin-top:10px" onclick="consultarJson()">🔊 Consultar y narrar</button>
       <div id="consulta-resultado" class="aviso oculto"></div>
     </div>
+
+    <div class="tarjeta glass">
+      <h2>Noticias NTT DATA / tecnología<small>garantizado, sin LLM</small></h2>
+      <div class="sub">Trae titulares reales por RSS (no depende de Bedrock/Groq) y los muestra
+        + dice en el ESP32. Ideal si el resto falla en plena demo.</div>
+      <button class="btn primario" onclick="leerNoticias()">📰 Leer noticias ahora</button>
+      <div id="noticias-agente-resultado" class="aviso oculto"></div>
+    </div>
   </section>
 
   <!-- PANTALLAS -->
@@ -735,6 +743,18 @@ async function consultarJson(){
   try {
     const r = await api("/api/consulta", {method:"POST", body: JSON.stringify({url})});
     res.textContent = "🔊 " + (r.resultado?.narracion || "hecho");
+  } catch(e){
+    res.textContent = "no se pudo: " + e.message;
+  }
+}
+async function leerNoticias(){
+  const res = document.getElementById("noticias-agente-resultado");
+  res.classList.remove("oculto");
+  res.textContent = "buscando titulares…";
+  try {
+    const r = await api("/api/noticias/leer", {method:"POST"});
+    const t = (r.resultado?.titulares || []).join(" · ");
+    res.textContent = "📰 " + (t || r.resultado?.narracion || "hecho");
   } catch(e){
     res.textContent = "no se pudo: " + e.message;
   }

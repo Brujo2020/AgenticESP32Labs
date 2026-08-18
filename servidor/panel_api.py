@@ -501,6 +501,17 @@ async def consulta_json(body: ConsultaIn):
     return {"ok": True, "resultado": v}
 
 
+@app.post("/api/noticias/leer", dependencies=router_dep)
+async def noticias_leer():
+    """Trae titulares reales por RSS (sin LLM) y los muestra + dice en el
+    ESP32. Pensado como demo garantizada: no depende de que Bedrock/Groq
+    esten arriba, solo de que haya internet."""
+    v = await _control_llama("leer_noticias", {}, timeout=15)
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return {"ok": True, "resultado": v}
+
+
 # ================================================================
 #  Frontend estatico (panel_web/)
 # ================================================================

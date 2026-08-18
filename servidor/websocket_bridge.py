@@ -112,8 +112,6 @@ async def consulta_json_narrada(url: str) -> dict:
 
     if not url.startswith(("http://", "https://")):
         return {"error": "la url debe empezar con http:// o https://"}
-    if not agente or not agente.cadena_llm:
-        return {"error": "el agente todavia no esta listo"}
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -128,25 +126,52 @@ async def consulta_json_narrada(url: str) -> dict:
     except Exception as e:
         return {"error": str(e) or type(e).__name__}
 
-    contenido = json.dumps(datos, ensure_ascii=False)[:3000] if not isinstance(datos, str) else datos
-    mensajes = [
-        {"role": "system", "content": (
-            "Te doy el contenido (JSON o texto) de una API publica. Cuentalo "
-            "en espanol, en prosa natural y corta (2 a 4 frases), como se lo "
-            "contarias a alguien en voz alta. Menciona los datos y valores "
-            "concretos que importen. NUNCA digas la palabra 'json', ni "
-            "nombres de campos/llaves tal cual, ni uses formato clave: valor. "
-            "No uses listas ni markdown, solo texto corrido."
-        )},
-        {"role": "user", "content": f"URL: {url}\n\nContenido:\n{contenido}"},
-    ]
-    try:
-        msg = await agente.cadena_llm.chat_completo(mensajes, None)
-        narracion = (msg.get("content") or "").strip()
-    except Exception as e:
-        return {"error": f"no se pudo narrar: {e}"}
+    def _resumen_simple(d, maximo=3) -> str:
+        """Respaldo sin LLM: junta los primeros valores en una frase,
+        para no depender de que Bedrock/Groq esten arriba en el momento
+        de la demo. No es tan natural como la version con LLM, pero
+        nunca falla y nunca lee llaves crudas tipo 'clave: valor'.
+        """
+        pares = []
+        def _recorre(x, prof=0):
+            if len(pares) >= maximo or prof > 2:
+                return
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if len(pares) >= maximo:
+                        break
+                    if isinstance(v, (dict, list)):
+                        _recorre(v, prof + 1)
+                    else:
+                        pares.append(f"{k.replace('_', ' ')} es {v}")
+            elif isinstance(x, list) and x:
+                _recorre(x[0], prof + 1)
+        _recorre(d)
+        if not pares:
+            return "La consulta respondio, pero no encontre datos claros para contar."
+        return "Esto encontre: " + ", ".join(pares) + "."
+
+    narracion = None
+    if agente and agente.cadena_llm:
+        contenido = json.dumps(datos, ensure_ascii=False)[:3000] if not isinstance(datos, str) else datos
+        mensajes = [
+            {"role": "system", "content": (
+                "Te doy el contenido (JSON o texto) de una API publica. Cuentalo "
+                "en espanol, en prosa natural y corta (2 a 4 frases), como se lo "
+                "contarias a alguien en voz alta. Menciona los datos y valores "
+                "concretos que importen. NUNCA digas la palabra 'json', ni "
+                "nombres de campos/llaves tal cual, ni uses formato clave: valor. "
+                "No uses listas ni markdown, solo texto corrido."
+            )},
+            {"role": "user", "content": f"URL: {url}\n\nContenido:\n{contenido}"},
+        ]
+        try:
+            msg = await asyncio.wait_for(agente.cadena_llm.chat_completo(mensajes, None), timeout=12)
+            narracion = (msg.get("content") or "").strip() or None
+        except Exception as e:
+            log.warning("consulta_json: fallo narrar con LLM (%s), uso resumen simple", e)
     if not narracion:
-        return {"error": "el modelo no devolvio texto"}
+        narracion = _resumen_simple(datos) if not isinstance(datos, str) else datos[:200]
 
     # A partir de aqui todo es "mejor esfuerzo" hacia el dispositivo: la
     # narracion ya se consiguio (lo caro/lento), asi que si el ESP32 no
@@ -177,6 +202,42 @@ async def consulta_json_narrada(url: str) -> dict:
         log.warning("consulta_json: no hay ESP32 conectado, solo se devuelve el texto")
 
     return {"ok": True, "narracion": narracion}
+
+
+async def leer_noticias_agente(maximo: int = 3) -> dict:
+    """Trae titulares reales (RSS, sin LLM ni API paga -- no puede fallar por
+    cuota de Bedrock/Groq) y los muestra + dice en el ESP32. Pensado como
+    demo rapida y a prueba de fallos: NTT DATA / tecnologia Chile son las
+    primeras fuentes en noticias.py.
+    """
+    try:
+        titulos = await titulares(maximo)
+    except Exception as e:
+        return {"error": str(e) or type(e).__name__}
+    if not titulos:
+        return {"error": "no se encontraron titulares ahora mismo"}
+
+    frase = "Últimas noticias: " + ". ".join(t.rstrip(".").capitalize() for t in titulos) + "."
+
+    if CANAL.vivo:
+        try:
+            await CANAL.mostrar("noticias", "NOTICIAS",
+                                [{"txt": t[:33]} for t in titulos], "cyan", 80, 60)
+            await CANAL.notifica(titulos[0][:60], "info", beep=True)
+        except Exception as e:
+            log.warning("leer_noticias_agente: no se pudo mostrar en el HUD: %s", e)
+        try:
+            audio = await asyncio.to_thread(sintetiza, frase)
+            if audio:
+                for i in range(0, len(audio), 2048):
+                    await CANAL.send(audio[i:i + 2048])
+                await envia(CANAL.ws, "texto", titulos[0][:40].upper())
+        except Exception as e:
+            log.warning("leer_noticias_agente: fallo el TTS/envio de audio: %s", e)
+    else:
+        log.warning("leer_noticias_agente: no hay ESP32 conectado, solo se devuelve el texto")
+
+    return {"ok": True, "titulares": titulos, "narracion": frase}
 
 
 def sintetiza(texto: str) -> bytes:
@@ -378,6 +439,8 @@ async def atiende_control(ws):
                     v = f"Dicho en voz alta: {texto}"
                 elif fn == "consulta_json":
                     v = await consulta_json_narrada(args["url"])
+                elif fn == "leer_noticias":
+                    v = await leer_noticias_agente()
                 elif fn == "estado":
                     v = CANAL.snapshot()
                 elif fn == "configurar":

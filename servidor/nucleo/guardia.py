@@ -53,6 +53,9 @@ EXIGE = {
     # Trae un JSON externo, lo narra con el LLM y lo dice en voz alta ->
     # exige la capacidad mas restrictiva de las dos que usa (hablar).
     "consulta_json": "hablar",
+    # Titulares por RSS (sin LLM): mismo nivel que consulta_json, produce
+    # audio en el device.
+    "leer_noticias": "hablar",
     "configurar": "administrar",
     "reiniciar":  "administrar",
     "pantallas":  "administrar",
@@ -75,6 +78,7 @@ LIMITES = {
     # Cada llamada hace una peticion de red + una llamada al LLM + TTS: mas
     # caro que 'hablar' solo, por eso un limite mas bajo.
     "consulta_json": (6, 60),
+    "leer_noticias": (6, 60),
     "configurar": (20, 60),
     "reiniciar":  (2, 300),
     "pantallas":  (20, 60),

@@ -148,12 +148,34 @@ async def consulta_json_narrada(url: str) -> dict:
     if not narracion:
         return {"error": "el modelo no devolvio texto"}
 
-    titulo = url.split("//", 1)[-1][:33].upper()
-    await CANAL.mostrar("consulta", titulo, [narracion[:120]], "info", 90, 60)
-    audio = await asyncio.to_thread(sintetiza, narracion)
-    for i in range(0, len(audio), 2048):
-        await CANAL.send(audio[i:i + 2048])
-    await envia(CANAL.ws, "texto", narracion[:40].upper())
+    # A partir de aqui todo es "mejor esfuerzo" hacia el dispositivo: la
+    # narracion ya se consiguio (lo caro/lento), asi que si el ESP32 no
+    # esta conectado, o el TTS falla, o lo que sea, el panel igual tiene
+    # que mostrar el texto -- no tiene sentido perderlo por un problema
+    # de audio/hardware que no tiene arreglo desde aca en el momento.
+    if CANAL.vivo:
+        titulo = url.split("//", 1)[-1][:33].upper()
+        try:
+            await CANAL.mostrar("consulta", titulo, [narracion[:120]], "info", 90, 60)
+            # Beep de confirmacion inmediato (no depende del TTS ni del LLM):
+            # asi el ESP32 hace *algo* audible ya mismo aunque la sintesis
+            # de voz tarde o falle.
+            await CANAL.notifica(narracion[:60], "info", beep=True)
+        except Exception as e:
+            log.warning("consulta_json: no se pudo mostrar en el HUD: %s", e)
+        try:
+            audio = await asyncio.to_thread(sintetiza, narracion)
+            if audio:
+                for i in range(0, len(audio), 2048):
+                    await CANAL.send(audio[i:i + 2048])
+                await envia(CANAL.ws, "texto", narracion[:40].upper())
+            else:
+                log.warning("consulta_json: TTS no devolvio audio")
+        except Exception as e:
+            log.warning("consulta_json: fallo el TTS/envio de audio: %s", e)
+    else:
+        log.warning("consulta_json: no hay ESP32 conectado, solo se devuelve el texto")
+
     return {"ok": True, "narracion": narracion}
 
 

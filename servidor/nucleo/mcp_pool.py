@@ -29,7 +29,13 @@ class MCPPool:
     def __init__(self, config_path: str = "config.yaml"):
         from .config import Config
         self.config = Config(config_path)
-        self.stack = AsyncExitStack()
+        # Un AsyncExitStack POR servidor, no uno compartido: para desconectar
+        # un solo MCP en caliente (activar()/desactivar(), hot-reload de
+        # 001-panel-administracion-mcp Fase 0) hace falta poder cerrar su
+        # stdio_client+ClientSession sin tocar los de los demas. Un stack
+        # unico solo se puede cerrar entero (cerrar() lo sigue haciendo asi,
+        # de golpe, al apagar el proceso).
+        self.stacks: dict[str, AsyncExitStack] = {}
         self.sesiones: dict[str, ClientSession] = {}
         self.herramientas: dict[str, dict] = {}     # nombre -> {servidor, esquema}
 
@@ -66,9 +72,15 @@ class MCPPool:
             args=cfg["command"][1:],
             env={**os.environ, **entorno},
         )
-        lectura, escritura = await self.stack.enter_async_context(stdio_client(params))
-        sesion = await self.stack.enter_async_context(ClientSession(lectura, escritura))
-        await sesion.initialize()
+        stack = AsyncExitStack()
+        try:
+            lectura, escritura = await stack.enter_async_context(stdio_client(params))
+            sesion = await stack.enter_async_context(ClientSession(lectura, escritura))
+            await sesion.initialize()
+        except Exception:
+            await stack.aclose()
+            raise
+        self.stacks[nombre] = stack
         self.sesiones[nombre] = sesion
 
         for t in (await sesion.list_tools()).tools:
@@ -84,6 +96,61 @@ class MCPPool:
                 },
             }
         log.info("MCP '%s' listo", nombre)
+
+    # ------------------------------------------------------------
+    #  Hot-reload (Fase 0 de 001-panel-administracion-mcp/tasks.md): activar
+    #  o desactivar UN MCP sin tocar los demas ni reiniciar este proceso.
+    # ------------------------------------------------------------
+    async def activar(self, nombre: str) -> bool:
+        """Conecta un MCP concreto. Devuelve False si ya estaba conectado."""
+        if nombre in self.sesiones:
+            return False
+        cfg = self.config.get_mcp_servers().get(nombre)
+        if not cfg:
+            raise ValueError(f"'{nombre}' no esta en mcp_servers de config.yaml")
+        await self._conecta(nombre, cfg)
+        return True
+
+    async def desactivar(self, nombre: str) -> bool:
+        """Desconecta un MCP concreto. Devuelve False si no estaba conectado."""
+        stack = self.stacks.pop(nombre, None)
+        if stack is None:
+            return False
+        self.sesiones.pop(nombre, None)
+        for tool_nombre in [t for t, h in self.herramientas.items() if h["servidor"] == nombre]:
+            del self.herramientas[tool_nombre]
+        await stack.aclose()
+        log.info("MCP '%s' desconectado", nombre)
+        return True
+
+    async def sincroniza(self, config=None) -> dict:
+        """Ajusta las conexiones vivas a lo que dice config.yaml AHORA MISMO,
+        sin reiniciar el proceso: conecta lo que se activo desde el panel,
+        desconecta lo que se desactivo. Se llama tras detectar que config.yaml
+        cambio (ver Config.recarga_si_cambio en websocket_bridge.py).
+
+        Un MCP que falla al conectar no rompe la sincronizacion del resto
+        (mismo criterio que connect_all): queda registrado en el log y se
+        reintenta en la siguiente sincronizacion.
+        """
+        if config is not None:
+            self.config = config
+        servidores = self.config.get_mcp_servers()
+        deseados = set(self.config.get_enabled_tools()) & set(servidores)
+        conectados = set(self.sesiones)
+
+        activados, desactivados, fallidos = [], [], []
+        for nombre in deseados - conectados:
+            try:
+                await self._conecta(nombre, servidores[nombre])
+                activados.append(nombre)
+            except Exception as e:
+                log.error("hot-reload: MCP '%s' no arranco: %s", nombre, e)
+                fallidos.append(nombre)
+        for nombre in conectados - deseados:
+            await self.desactivar(nombre)
+            desactivados.append(nombre)
+        return {"activados": activados, "desactivados": desactivados, "fallidos": fallidos}
 
     def esquemas(self, servidores: list[str] | None = None) -> list[dict]:
         """Herramientas en el formato que espera la API de OpenAI.
@@ -115,4 +182,10 @@ class MCPPool:
             return f"Error al ejecutar {nombre}: {e}"
 
     async def cerrar(self):
-        await self.stack.aclose()
+        for nombre in list(self.stacks):
+            try:
+                await self.stacks.pop(nombre).aclose()
+            except Exception as e:
+                log.warning("fallo cerrando MCP '%s': %s", nombre, e)
+        self.sesiones.clear()
+        self.herramientas.clear()

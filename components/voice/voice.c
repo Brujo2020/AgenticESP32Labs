@@ -572,6 +572,18 @@ static void tarea_mic(void *arg)
             size_t got = audio_mic_read(buf, sizeof(buf), 100);
             if (got) esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
         } else {
+            // El I2S sigue capturando en su buffer DMA circular todo el
+            // tiempo, se lea o no -- si nadie lo drena mientras se esta en
+            // reposo (sin hablar), se acumula un atraso. Al presionar el
+            // boton para hablar, los primeros audio_mic_read() devolvian
+            // ese audio VIEJO (ruido de ambiente de uno o mas segundos
+            // atras), no lo que se decia en ese instante -- confirmado
+            // analizando una grabacion real: el primer ~1s completo era
+            // ruido, y la voz real recien aparecia despues. Vaciar el
+            // buffer con un timeout de 0 (no bloquea) evita que ese atraso
+            // se acumule, para que al empezar a hablar el audio ya este
+            // sincronizado con el momento real.
+            audio_mic_read(buf, sizeof(buf), 0);
             vTaskDelay(pdMS_TO_TICKS(20));
             // Cada ~4 s se publica el estado. Se aprovecha esta tarea en vez
             // de crear otra: ya esta despierta y ociosa cuando no se habla.

@@ -24,6 +24,12 @@
 #define CX 120
 #define CY 120
 
+// DEMO: desactiva temporalmente el push-to-talk (tocar para hablarle) sin
+// tocar nada mas -- el HUD sigue anunciando por voz hora/clima/noticias
+// como siempre (eso no depende de este boton). Poner en 1 para volver a
+// activar la conversacion por voz despues de la demo.
+#define VOZ_ENTRANTE_ACTIVA 0
+
 static hud_state_t  s_state = ST_IDLE;
 static hud_screen_t s_scr   = SCR_NUCLEO;
 static int s_t = 0;                 // contador de fotogramas
@@ -264,11 +270,17 @@ void hud_next_screen(void)
 {
     s_scr = vecina(s_scr, +1);
     s_trans = 8;
+    // Beep corto al navegar: feedback tactil/auditivo inmediato, dos tonos
+    // distintos (mas agudo=siguiente, mas grave=anterior) para que se
+    // note la direccion sin mirar la pantalla. Mismo patron que ya usa
+    // voice_talk_stop() en voice.c, respeta el mismo ajuste de "efectos".
+    if (ajustes()->efectos) audio_beep(1800, 40);
 }
 static void hud_prev_screen(void)
 {
     s_scr = vecina(s_scr, -1);
     s_trans = 8;
+    if (ajustes()->efectos) audio_beep(900, 40);
 }
 bool hud_hablando(void) { return s_hablando; }
 
@@ -822,7 +834,7 @@ void hud_touch_up(int x, int y)
                 if (esp_timer_get_time() / 1000 - s_t_down < 400) hud_ajuste_siguiente();
                 else hud_ajuste_incrementa();
             }
-            else {
+            else if (VOZ_ENTRANTE_ACTIVA) {
                 // Un solo toque arranca a escuchar (antes hacia falta
                 // mantener presionado 250ms, ver hud_touch_hold). Al
                 // arrancar, salta a la pantalla VOZ para ver el estado.

@@ -59,9 +59,9 @@ class ConsolaAsistente:
 
         if cmd == "/modelos":
             modelos = self.agente.get_available_models()
-            print(f"\nModelos (actual: {self.agente.current_model}):")
+            print(f"\nModelos (actual: {self.agente.modelo_actual}):")
             for m in modelos:
-                marker = "📌" if m["name"] == self.agente.current_model else "  "
+                marker = "📌" if m["name"] == self.agente.modelo_actual else "  "
                 print(f"  {marker} {m['name']:15} - {m['description']}")
             print()
         elif cmd == "/modelo":

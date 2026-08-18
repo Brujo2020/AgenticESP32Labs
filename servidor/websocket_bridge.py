@@ -96,6 +96,67 @@ def _transcribe_local(wav_path: str) -> str:
         return ""
 
 
+async def consulta_json_narrada(url: str) -> dict:
+    """Trae un JSON publico y lo devuelve narrado en prosa, listo para
+    mostrar en el HUD y para decirlo por TTS.
+
+    Pensado para el input del panel web ("pega una URL y te lo cuento"):
+    el usuario no quiere que le lean las llaves del JSON ("temperatura:
+    18, humedad: 60"), quiere que se lo cuenten como lo diria una persona
+    ("hace 18 grados y el aire esta bastante humedo"). Por eso el JSON
+    crudo no llega nunca al ESP32 -- pasa primero por el LLM que ya usa
+    el agente (misma cadena de proveedores que config.yaml), pidiendole
+    exactamente eso: prosa corta en espanol, sin mencionar json ni llaves.
+    """
+    import aiohttp
+
+    if not url.startswith(("http://", "https://")):
+        return {"error": "la url debe empezar con http:// o https://"}
+    if not agente or not agente.cadena_llm:
+        return {"error": "el agente todavia no esta listo"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                texto_bruto = await resp.text()
+                if resp.status != 200:
+                    return {"error": f"API: {resp.status}"}
+                try:
+                    datos = await resp.json(content_type=None)
+                except Exception:
+                    datos = texto_bruto[:2000]
+    except Exception as e:
+        return {"error": str(e) or type(e).__name__}
+
+    contenido = json.dumps(datos, ensure_ascii=False)[:3000] if not isinstance(datos, str) else datos
+    mensajes = [
+        {"role": "system", "content": (
+            "Te doy el contenido (JSON o texto) de una API publica. Cuentalo "
+            "en espanol, en prosa natural y corta (2 a 4 frases), como se lo "
+            "contarias a alguien en voz alta. Menciona los datos y valores "
+            "concretos que importen. NUNCA digas la palabra 'json', ni "
+            "nombres de campos/llaves tal cual, ni uses formato clave: valor. "
+            "No uses listas ni markdown, solo texto corrido."
+        )},
+        {"role": "user", "content": f"URL: {url}\n\nContenido:\n{contenido}"},
+    ]
+    try:
+        msg = await agente.cadena_llm.chat_completo(mensajes, None)
+        narracion = (msg.get("content") or "").strip()
+    except Exception as e:
+        return {"error": f"no se pudo narrar: {e}"}
+    if not narracion:
+        return {"error": "el modelo no devolvio texto"}
+
+    titulo = url.split("//", 1)[-1][:33].upper()
+    await CANAL.mostrar("consulta", titulo, [narracion[:120]], "info", 90, 60)
+    audio = await asyncio.to_thread(sintetiza, narracion)
+    for i in range(0, len(audio), 2048):
+        await CANAL.send(audio[i:i + 2048])
+    await envia(CANAL.ws, "texto", narracion[:40].upper())
+    return {"ok": True, "narracion": narracion}
+
+
 def sintetiza(texto: str) -> bytes:
     """TTS a traves de la cadena de proveedores."""
     c = cadenas.get("tts")
@@ -293,6 +354,8 @@ async def atiende_control(ws):
                         await CANAL.send(audio[i:i + 2048])
                     await envia(CANAL.ws, "texto", texto[:40].upper())
                     v = f"Dicho en voz alta: {texto}"
+                elif fn == "consulta_json":
+                    v = await consulta_json_narrada(args["url"])
                 elif fn == "estado":
                     v = CANAL.snapshot()
                 elif fn == "configurar":

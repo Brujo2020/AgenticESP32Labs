@@ -32,24 +32,40 @@ class Cadena:
     def __init__(self, capacidad: str, orden: list[str], catalogo: dict):
         self.capacidad = capacidad
         self.miembros: list[Proveedor] = []
+        self.recargar(orden, catalogo, _silencioso=True)
+
+    def recargar(self, orden: list[str], catalogo: dict, _silencioso: bool = False):
+        """Reconstruye 'miembros' con un orden/catalogo nuevos, EN EL MISMO
+        objeto (self.miembros se reemplaza, pero el objeto Cadena en si nunca
+        cambia de identidad).
+
+        Eso es lo que permite el hot-reload de Fase 0
+        (001-panel-administracion-mcp/tasks.md): tanto 'agente.cadena_llm'
+        como el 'cadenas[...]' de websocket_bridge.py guardan una referencia
+        a este MISMO objeto Cadena, asi que reordenar proveedores desde el
+        panel web se refleja aqui sin que nadie tenga que reasignar esa
+        referencia en otro proceso/hilo.
+        """
+        nuevos: list[Proveedor] = []
         for nombre in orden:
             if nombre not in catalogo:
-                log.warning("%s: '%s' no esta en el catalogo, se omite", capacidad, nombre)
+                log.warning("%s: '%s' no esta en el catalogo, se omite", self.capacidad, nombre)
                 continue
             try:
-                p = construir(capacidad, nombre, catalogo[nombre])
+                p = construir(self.capacidad, nombre, catalogo[nombre])
             except Exception as e:
-                log.warning("%s: no se pudo construir '%s': %s", capacidad, nombre, e)
+                log.warning("%s: no se pudo construir '%s': %s", self.capacidad, nombre, e)
                 continue
             if not p.disponible():
                 log.info("%s: '%s' sin credenciales o dependencias, se omite",
-                         capacidad, nombre)
+                         self.capacidad, nombre)
                 continue
-            self.miembros.append(p)
+            nuevos.append(p)
+        self.miembros = nuevos
         if self.miembros:
-            log.info("%s -> %s", capacidad, " > ".join(m.nombre for m in self.miembros))
-        else:
-            log.error("%s: ningun proveedor disponible", capacidad)
+            log.info("%s -> %s", self.capacidad, " > ".join(m.nombre for m in self.miembros))
+        elif not _silencioso:
+            log.error("%s: ningun proveedor disponible tras recargar", self.capacidad)
 
     @property
     def activo(self):
@@ -115,3 +131,17 @@ def cadenas_desde_config(cfg: dict) -> dict[str, Cadena]:
         cap: Cadena(cap, sec.get(cap, []), catalogo.get(cap, {}))
         for cap in ("llm", "stt", "tts")
     }
+
+
+def recargar_cadenas(cadenas: dict[str, Cadena], cfg: dict):
+    """Hot-reload de Fase 0: recarga las TRES cadenas ya existentes en vez de
+    crear objetos Cadena nuevos, para que quien ya tenga una referencia
+    (agente.cadena_llm, el 'cadenas' modulo-nivel de websocket_bridge.py) vea
+    el cambio sin que nadie tenga que reasignarla. Se llama cuando
+    Config.recarga_si_cambio() detecta que config.yaml cambio en disco.
+    """
+    sec = cfg.get("proveedores", {})
+    catalogo = cfg.get("catalogo", {})
+    for cap in ("llm", "stt", "tts"):
+        if cap in cadenas:
+            cadenas[cap].recargar(sec.get(cap, []), catalogo.get(cap, {}))

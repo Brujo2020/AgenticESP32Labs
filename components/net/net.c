@@ -21,11 +21,18 @@
 #include "mdns.h"
 
 // ---- Ajusta esto a tu red y tu ubicacion ----
-#define WIFI_SSID   "(:<BrUjO>:)"
-#define WIFI_PASS   "_BrUjO_The_Best_2020+$$$!"
-#define ZONA_HORARIA "<-05>5"          // UTC-5
-#define LAT  "-12.05"
-#define LON  "-77.04"
+// DEMO (18 ago 2026): hotspot del celular en vez de la red de casa, para
+// la presentacion en el trabajo. Volver a la red de casa despues si hace
+// falta -- valores anteriores en el historial de git.
+#define WIFI_SSID   "BrUjO-iPhone"
+#define WIFI_PASS   "perrokool"
+// Chile continental es UTC-4 (sin horario de verano en agosto). Estaba en
+// UTC-5 (Peru/Ecuador/Colombia), de ahi la hora "una hora menos" que se
+// notaba en el HUD.
+#define ZONA_HORARIA "<-04>4"          // UTC-4, Chile continental
+// Santiago de Chile (antes tenia las coordenadas de Lima, Peru).
+#define LAT  "-33.45"
+#define LON  "-70.65"
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_evt;

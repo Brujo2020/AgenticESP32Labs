@@ -4,13 +4,25 @@ Desglose ejecutable de `plan.md`. Orden sugerido; cada tarea es chica y
 comprobable por separado.
 
 ## Fase 0 — base para no romper nada
-- [ ] `nucleo/mcp_pool.py`: exponer `activar(nombre)` / `desactivar(nombre)`
-      sin reiniciar el proceso completo (hoy el pool se arma una vez al
-      iniciar el bridge). **Diferido**: v1 del panel escribe el YAML y ofrece
-      un boton "reiniciar servicio de voz" (systemctl) en vez de hot-reload
-      real del pool en memoria. Sigue pendiente para quitar el reinicio.
-- [ ] `proveedores/*.py`: releer la cadena en cada turno en vez de fijarla al
-      arrancar (o exponer `recargar_cadena()`).
+- [x] `nucleo/mcp_pool.py`: `activar(nombre)` / `desactivar(nombre)` sin
+      reiniciar el proceso completo. Requirio pasar de un `AsyncExitStack`
+      COMPARTIDO a uno por servidor (`self.stacks: dict[str, AsyncExitStack]`)
+      -- si no, no se puede cerrar uno solo sin arriesgar los demas.
+      `sincroniza(config)` compara `tools_to_enable` contra lo conectado y
+      activa/desactiva la diferencia; un MCP que falla no rompe al resto
+      (mismo criterio que `connect_all`).
+- [x] `proveedores/*.py`: `Cadena.recargar(orden, catalogo)` reconstruye
+      `miembros` EN EL MISMO objeto (no crea una Cadena nueva), asi que
+      `agente.cadena_llm` y el `cadenas` modulo-nivel de `websocket_bridge.py`
+      ven el cambio sin que nadie tenga que reasignar la referencia.
+      `recargar_cadenas()` lo aplica a las tres (llm/stt/tts) de una vez.
+      Se dispara solo: `websocket_bridge.sincroniza_en_caliente()` corre al
+      principio de cada turno de voz, justo despues de que
+      `Config.recarga_si_cambio()` detecte que el panel escribio config.yaml
+      -- "releer en cada turno", tal cual pedia esta tarea, no un mecanismo
+      de push aparte. `panel_api.py` ya no dice "reinicio pendiente": los
+      endpoints de activar/desactivar MCP y reordenar proveedores devuelven
+      `"aplicacion": "en_caliente_proximo_turno"`.
 - [x] Formalizar `agentic-voz.service` (systemd) para el bridge actual —
       independiente de todo lo nuevo, corrige la mejora #8. (`servidor/deploy/`)
 
@@ -22,9 +34,8 @@ comprobable por separado.
       `/api/claves`. Falta exponer los ultimos errores de arranque en vivo
       (hoy solo se ve al llamar `/api/mcp/probar`, no persistido).
 - [x] Endpoints de escritura: activar/desactivar MCP, reordenar cadena de
-      proveedores, credenciales, crear MCP nuevo. Escriben el YAML de una;
-      "llaman a lo hecho en Fase 0" queda pendiente en el sentido de aplicar
-      sin reiniciar (ver nota de Fase 0).
+      proveedores, credenciales, crear MCP nuevo. Escriben el YAML y se
+      aplican en caliente en el bridge de voz sin reiniciar nada (ver Fase 0).
 - [x] `.env` + resolución de credenciales, endpoint que guarda sin devolver
       el valor en claro (reusa `nucleo/entorno.py`, ya existente).
 - [x] Historial de cambios (`config_historial.jsonl`), un log por escritura
@@ -42,10 +53,10 @@ comprobable por separado.
       Falta el estado de conexion del ESP32 en si (no hay endpoint que lo
       exponga todavia; `nucleo/canal.py` sabe si hay dispositivo conectado
       pero panel_api no lo consulta aun).
-- [ ] Catalogo con drag-and-drop hacia "activos". **Simplificado**: v1
-      activa/desactiva MCP con un switch (mas simple, mismo resultado), no
-      arrastrando la tarjeta. El drag-and-drop real esta implementado para
-      reordenar las cadenas de proveedores (si aplica ahi el patron).
+- [x] Catalogo con drag-and-drop hacia "activos". Dos zonas de drop
+      (`#mcp-activos` / `#mcp-disponibles`, mismo patron HTML5 DnD que las
+      cadenas de proveedores); soltar una tarjeta en la otra zona llama a
+      `/api/mcp/{nombre}/activar` o `/desactivar` segun donde caiga.
 - [x] Reordenar cadenas de proveedores con drag-and-drop nativo (HTML5 DnD,
       sin libreria — mas liviano que dnd-kit para este alcance).
 - [x] Formulario de credenciales (campos enmascarados).

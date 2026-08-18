@@ -243,12 +243,18 @@ mcp_servers:
     command: ["python3", "mcps/vigia.py"]
     env: { HUD_BRIDGE: "ws://127.0.0.1:8765", VIGIA_REPO: "${VIGIA_REPO}" }
 
+  consulta:
+    type: "subprocess"
+    command: ["python3", "mcps/consulta.py"]
+    env: { PYTHONPATH: "." }
+
 tools_to_enable:
   - clima
   - sistema
   - mac
   - dispositivo
   - vigia
+  - consulta
   # - blender      # requiere el addon BlenderMCP instalado en Blender
   # - unity        # requiere el paquete Unity MCP en el proyecto
   # - ficheros

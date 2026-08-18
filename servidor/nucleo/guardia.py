@@ -50,6 +50,9 @@ EXIGE = {
     "pregunta_async": "preguntar",
     "consulta": "estado",
     "estado":   "estado",
+    # Trae un JSON externo, lo narra con el LLM y lo dice en voz alta ->
+    # exige la capacidad mas restrictiva de las dos que usa (hablar).
+    "consulta_json": "hablar",
     "configurar": "administrar",
     "reiniciar":  "administrar",
     "pantallas":  "administrar",
@@ -69,6 +72,9 @@ LIMITES = {
     "pregunta_async": (6, 60),
     "consulta": (120, 60),
     "estado":   (60, 60),
+    # Cada llamada hace una peticion de red + una llamada al LLM + TTS: mas
+    # caro que 'hablar' solo, por eso un limite mas bajo.
+    "consulta_json": (6, 60),
     "configurar": (20, 60),
     "reiniciar":  (2, 300),
     "pantallas":  (20, 60),
@@ -237,6 +243,22 @@ class Guardia:
         if cmd == "consulta":
             return {"qid": self._texto(a.get("qid"), "qid", 12),
                     "__dry_run__": seco}
+
+        if cmd == "consulta_json":
+            url = a.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise Rechazo("'url' debe ser texto no vacio.")
+            url = url.strip()
+            # No se reusa self._texto: una URL real lleva '&', '?', '=', '~'
+            # que el alfabeto de pantalla (_TEXTO_OK) no admite a proposito.
+            # Aqui el destino no es la pantalla, es una peticion HTTP saliente.
+            if len(url) > 500:
+                raise Rechazo(f"'url' mide {len(url)} caracteres, maximo 500.")
+            if not url.startswith(("http://", "https://")):
+                raise Rechazo("'url' debe empezar con http:// o https://")
+            if any(ord(ch) < 0x20 for ch in url):
+                raise Rechazo("'url' tiene caracteres de control no permitidos.")
+            return {"url": url, "__dry_run__": seco}
 
         if cmd in ("pregunta", "pregunta_async"):
             txt = self._texto(a.get("txt"), "txt", ancho * 2).upper()

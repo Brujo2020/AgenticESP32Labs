@@ -8,6 +8,13 @@ import httpx
 log = logging.getLogger("noticias")
 
 FUENTES = [
+    # DEMO (18 ago 2026): noticias relevantes para la presentacion en el
+    # trabajo -- Google News RSS es el formato mas confiable para esto
+    # porque no depende de que un sitio puntual tenga su propio feed, se
+    # arma con cualquier busqueda. Los feeds genericos de IA quedan
+    # despues como respaldo.
+    "https://news.google.com/rss/search?q=NTT+DATA&hl=es-419&gl=CL&ceid=CL:es",
+    "https://news.google.com/rss/search?q=tecnologia+Chile&hl=es-419&gl=CL&ceid=CL:es",
     "https://hnrss.org/newest?q=AI+OR+LLM&count=10",
     "https://techcrunch.com/category/artificial-intelligence/feed/",
     "https://www.artificialintelligence-news.com/feed/",

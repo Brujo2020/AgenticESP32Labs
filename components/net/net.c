@@ -47,14 +47,32 @@ static char s_ip[16] = "0.0.0.0";
 static clima_t s_clima = {0};
 static int s_retry = 0;
 
+// Durante net_init se prueban varias redes a mano, y ahi la reconexion
+// automatica del manejador ESTORBA: esp_wifi_disconnect() dispara
+// STA_DISCONNECTED, el manejador llama a esp_wifi_connect() con la
+// configuracion ANTERIOR, y esa reconexion se pisa con la que se acaba de
+// pedir. En el log se ve como un bucle auth->assoc->run->init que nunca
+// llega a IP: la placa se asocia una y otra vez pero el DHCP no completa.
+//
+// Se deja apagada mientras se elige red y se enciende al conectar, que es
+// cuando reconectar solo si tiene sentido.
+static bool s_autoreconecta = false;
+
 static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        // Nada: quien decide a que red conectarse es net_init(). Antes se
+        // conectaba aqui a lo que hubiera configurado, compitiendo con la
+        // seleccion de red.
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_conn = false;
-        if (s_retry < 5) { esp_wifi_connect(); s_retry++; }
-        else xEventGroupSetBits(s_evt, BIT_FAIL);
+        if (!s_autoreconecta) {
+            xEventGroupSetBits(s_evt, BIT_FAIL);   // lo gestiona intenta()
+        } else if (s_retry < 5) {
+            esp_wifi_connect(); s_retry++;
+        } else {
+            xEventGroupSetBits(s_evt, BIT_FAIL);
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&e->ip_info.ip));
@@ -80,8 +98,13 @@ static bool intenta(int idx, int espera_ms)
     memcpy(wc.sta.password, r->pass, strnlen(r->pass, sizeof(wc.sta.password)));
 
     s_retry = 0;
-    xEventGroupClearBits(s_evt, BIT_OK | BIT_FAIL);
+    s_autoreconecta = false;          // que el manejador no se adelante
     esp_wifi_disconnect();
+    // Un respiro para que el disconnect se procese ANTES de reconfigurar. Sin
+    // esto, el evento de desconexion llega ya con la configuracion nueva
+    // puesta y se mezclan los dos intentos.
+    vTaskDelay(pdMS_TO_TICKS(200));
+    xEventGroupClearBits(s_evt, BIT_OK | BIT_FAIL);
     if (esp_wifi_set_config(WIFI_IF_STA, &wc) != ESP_OK) return false;
     esp_wifi_connect();
 
@@ -117,8 +140,13 @@ esp_err_t net_init(void)
 
     // Primero la de mejor senal de entre las que estan al alcance: evita
     // gastar 12 s intentando conectarse a una red que no esta presente.
+    // 15 s: asociarse es rapido pero el DHCP de algunos routers tarda varios
+    // segundos, y quedarse corto hace que se descarte una red que si
+    // funcionaba. En el log se veia "assoc -> run" seguido de "run -> init":
+    // asociado, pero sin darle tiempo a la IP.
     int mejor = wifi_red_mejor_visible();
-    if (mejor >= 0 && intenta(mejor, 12000)) {
+    if (mejor >= 0 && intenta(mejor, 15000)) {
+        s_autoreconecta = true;       // ya conectados: reconectar si se cae
         ESP_LOGI(TAG, "WiFi OK (%s), IP %s", wifi_red_ssid(mejor), s_ip);
         return ESP_OK;
     }
@@ -127,13 +155,20 @@ esp_err_t net_init(void)
     // probe). Como respaldo se prueban todas por orden, con menos espera.
     for (int i = 0; i < wifi_redes_num(); i++) {
         if (i == mejor) continue;
-        if (intenta(i, 8000)) {
+        if (intenta(i, 12000)) {
+            s_autoreconecta = true;
             ESP_LOGI(TAG, "WiFi OK (%s), IP %s", wifi_red_ssid(i), s_ip);
             return ESP_OK;
         }
     }
 
-    ESP_LOGW(TAG, "ninguna de las %d redes guardadas conecto", wifi_redes_num());
+    // Aunque no haya conectado ahora, se deja la reconexion automatica puesta
+    // con la ultima red probada: si el router estaba arrancando o la red
+    // aparece mas tarde, la placa entra sola sin necesidad de reiniciarla.
+    s_autoreconecta = true;
+    esp_wifi_connect();
+    ESP_LOGW(TAG, "ninguna de las %d redes guardadas conecto; se seguira "
+                  "reintentando en segundo plano", wifi_redes_num());
     return ESP_FAIL;
 }
 

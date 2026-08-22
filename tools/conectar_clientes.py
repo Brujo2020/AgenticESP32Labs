@@ -35,7 +35,10 @@ MCP_SCRIPT = SERVIDOR / "mcps" / "dispositivo.py"
 # la entrada en vez de duplicarla.
 NOMBRE = "esp32"
 
-IP_POR_DEFECTO = "56.125.193.142"
+# La IP publica de Lightsail cambia al reiniciar la instancia salvo que se le
+# adjunte una IP estatica (Networking > Create static IP). Si esta ya no vale,
+# se pasa la buena con --servidor IP.
+IP_POR_DEFECTO = "56.124.99.244"
 PUERTO = 8765
 
 V, R, A, Z, G, N = "\033[32m", "\033[31m", "\033[33m", "\033[36m", "\033[90m", "\033[0m"

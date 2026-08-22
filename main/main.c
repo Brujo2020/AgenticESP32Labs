@@ -20,11 +20,20 @@
 static const char *TAG = "main";
 
 // Direccion del servidor donde corre websocket_bridge.py.
-// Ahora vive en una VM de AWS Lightsail (IP publica y fija), no en el Mac:
-// el ESP32 esta en la red de casa y el servidor en la nube, asi que mDNS
-// (_hud._tcp) nunca los va a poner en contacto -- solo funciona dentro de
-// la misma red local. Esta IP fija es el unico camino real.
-#define SERVIDOR_HOST  "56.125.193.142"
+// Vive en una VM de AWS Lightsail, no en el Mac: el ESP32 esta en la red de
+// casa y el servidor en la nube, asi que mDNS (_hud._tcp) nunca los va a
+// poner en contacto -- solo funciona dentro de la misma red local.
+//
+// CUIDADO: la IP publica de Lightsail NO es fija por defecto. Cambia al
+// reiniciar la instancia, y entonces la placa deja de encontrar el servidor:
+// el panel dice "sin dispositivo" y no hay ni voz ni ajustes, sin que nada
+// este roto en realidad. Paso el 22/08/2026 (.142 -> .244).
+//
+// El arreglo definitivo no es editar esto cada vez, es adjuntar una IP
+// estatica en la consola de Lightsail:
+//     Networking > Create static IP > adjuntarla a esta instancia
+// Es gratis mientras este adjunta a una instancia en marcha.
+#define SERVIDOR_HOST  "56.124.99.244"
 #define SERVIDOR_PORT  8765
 
 // El clima se refresca en su propia tarea: la peticion HTTP bloquea

@@ -65,6 +65,20 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
         // conectaba aqui a lo que hubiera configurado, compitiendo con la
         // seleccion de red.
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        // El MOTIVO es lo unico que distingue "clave incorrecta" de "la red no
+        // esta" o "el router me echo", y sin el hay que adivinar mirando
+        // cuanto tardo en caerse. Los mas frecuentes:
+        //   15 (4WAY_HANDSHAKE_TIMEOUT) y 2/204 -> la contrasena esta mal
+        //   201 (NO_AP_FOUND)                   -> esa red no esta al alcance
+        //   8 (ASSOC_LEAVE) / 5 / 7             -> el AP nos desasocio
+        wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)data;
+        int razon = d ? d->reason : -1;
+        const char *pista =
+            (razon == 15 || razon == 2 || razon == 204) ? " (contrasena incorrecta)"
+          : (razon == 201)                              ? " (red no encontrada)"
+          : (razon == 205)                              ? " (fuera de alcance)"
+          : "";
+        ESP_LOGW(TAG, "desconectado, motivo %d%s", razon, pista);
         s_conn = false;
         if (!s_autoreconecta) {
             xEventGroupSetBits(s_evt, BIT_FAIL);   // lo gestiona intenta()

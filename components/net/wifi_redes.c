@@ -26,6 +26,9 @@ static int s_n = 0;
 #endif
 
 
+// Definida mas abajo; wifi_redes_carga() la necesita para la siembra.
+esp_err_t wifi_red_guarda(const char *ssid, const char *pass);
+
 static void guarda_en_nvs(void)
 {
     nvs_handle_t h;
@@ -55,13 +58,20 @@ void wifi_redes_carga(void)
         nvs_close(h);
     }
 
-    if (s_n == 0 && WIFI_SSID_DEFECTO[0]) {
-        // Siembra: evita que actualizar el firmware deje la placa sin red.
-        snprintf(s_redes[0].ssid, WIFI_SSID_MAX, "%s", WIFI_SSID_DEFECTO);
-        snprintf(s_redes[0].pass, WIFI_PASS_MAX, "%s", WIFI_PASS_DEFECTO);
-        s_n = 1;
-        guarda_en_nvs();
-        ESP_LOGW(TAG, "NVS vacio: sembrada la red compilada '%s'", s_redes[0].ssid);
+    if (WIFI_SSID_DEFECTO[0]) {
+        // Si el firmware se compilo con credenciales, se aplican SIEMPRE, no
+        // solo cuando NVS esta vacio.
+        //
+        // Al principio solo sembraban en NVS vacio, y eso hacia inutil el
+        // './run.sh --wifi': con una red ya guardada -- por ejemplo la del
+        // movil de la semana pasada -- teclear la de casa no cambiaba nada y
+        // la placa seguia intentando la vieja. Justo lo contrario de lo que
+        // uno espera al molestarse en escribirla.
+        //
+        // wifi_red_guarda() actualiza la clave si el SSID ya existe, asi que
+        // reflashear con la contrasena corregida tambien funciona.
+        ESP_LOGW(TAG, "credenciales compiladas: se aplica '%s'", WIFI_SSID_DEFECTO);
+        wifi_red_guarda(WIFI_SSID_DEFECTO, WIFI_PASS_DEFECTO);
     }
 
     for (int i = 0; i < s_n; i++)

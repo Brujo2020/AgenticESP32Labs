@@ -12,7 +12,7 @@ Protocolo (ws://0.0.0.0:8765):
       {"t":"texto","v":"..."}     lo que se entendio / lo que responde
       binario            audio de respuesta, mismo formato PCM
 """
-import asyncio, json, os, socket, subprocess, tempfile, wave, logging
+import asyncio, audioop, json, os, socket, subprocess, tempfile, wave, logging
 import websockets
 
 from nucleo.entorno import carga_env
@@ -46,23 +46,40 @@ async def arranca_agente():
     log.info("agente listo — herramientas: %s", agente.herramientas_disponibles())
 
 
+def normaliza(pcm: bytes) -> bytes:
+    """Sube el volumen del audio del microfono antes de mandarlo al STT.
+
+    El microfono de la placa capta bajo: hablando a medio metro, los picos se
+    quedan muy por debajo del fondo de escala. Whisper acierta bastante menos
+    con audio flojo -- se inventa palabras o devuelve frases sueltas -- y eso
+    acaba pareciendo que el modelo contesta cualquier cosa, cuando lo que pasa
+    es que no oyo bien la pregunta.
+
+    Se lleva el pico al 80% del rango: suficiente margen para no recortar los
+    transitorios (una 'p' o una 't' pegan mucho mas fuerte que el resto) y
+    ninguna ganancia si el audio ya venia bien. Tope de x8 para no convertir
+    una sala en silencio en un muro de ruido amplificado.
+    """
+    if not pcm:
+        return pcm
+    pico = audioop.max(pcm, 2)
+    if pico < 200:            # practicamente silencio: amplificar solo daria ruido
+        return pcm
+    objetivo = int(32767 * 0.8)
+    factor = min(objetivo / pico, 8.0)
+    if factor <= 1.05:        # ya venia con buen nivel
+        return pcm
+    return audioop.mul(pcm, 2, factor)
+
+
 def pcm_a_wav(pcm: bytes) -> str:
-    # Antepone ~200ms de silencio antes del audio real. El ESP32 tarda un
-    # poco en "engancharse" al grabar tras el gesto de activacion, y el
-    # arranque abrupto del audio (sin margen antes) hace que el STT pierda
-    # o distorsione el primer fonema -- confirmado porque el mismo sintoma
-    # ("que hora es" mal transcrito) aparece igual con Groq Whisper y con
-    # Amazon Transcribe, dos motores distintos: el problema esta en el
-    # audio de origen, no en el proveedor de STT. Esto no recupera el
-    # fonema si de verdad se perdio en el firmware, pero evita que el
-    # arranque brusco se lea como ruido/artefacto.
-    silencio = b"\x00" * (SAMPLE_RATE // 5 * 2)   # ~200ms, 16-bit mono
+    pcm = normaliza(pcm)
     f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     with wave.open(f.name, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SAMPLE_RATE)
-        w.writeframes(silencio + pcm)
+        w.writeframes(pcm)
     return f.name
 
 
@@ -94,150 +111,6 @@ def _transcribe_local(wav_path: str) -> str:
     except Exception as e:
         log.error("sin STT disponible: %s", e)
         return ""
-
-
-async def consulta_json_narrada(url: str) -> dict:
-    """Trae un JSON publico y lo devuelve narrado en prosa, listo para
-    mostrar en el HUD y para decirlo por TTS.
-
-    Pensado para el input del panel web ("pega una URL y te lo cuento"):
-    el usuario no quiere que le lean las llaves del JSON ("temperatura:
-    18, humedad: 60"), quiere que se lo cuenten como lo diria una persona
-    ("hace 18 grados y el aire esta bastante humedo"). Por eso el JSON
-    crudo no llega nunca al ESP32 -- pasa primero por el LLM que ya usa
-    el agente (misma cadena de proveedores que config.yaml), pidiendole
-    exactamente eso: prosa corta en espanol, sin mencionar json ni llaves.
-    """
-    import aiohttp
-
-    if not url.startswith(("http://", "https://")):
-        return {"error": "la url debe empezar con http:// o https://"}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                texto_bruto = await resp.text()
-                if resp.status != 200:
-                    return {"error": f"API: {resp.status}"}
-                try:
-                    datos = await resp.json(content_type=None)
-                except Exception:
-                    datos = texto_bruto[:2000]
-    except Exception as e:
-        return {"error": str(e) or type(e).__name__}
-
-    def _resumen_simple(d, maximo=3) -> str:
-        """Respaldo sin LLM: junta los primeros valores en una frase,
-        para no depender de que Bedrock/Groq esten arriba en el momento
-        de la demo. No es tan natural como la version con LLM, pero
-        nunca falla y nunca lee llaves crudas tipo 'clave: valor'.
-        """
-        pares = []
-        def _recorre(x, prof=0):
-            if len(pares) >= maximo or prof > 2:
-                return
-            if isinstance(x, dict):
-                for k, v in x.items():
-                    if len(pares) >= maximo:
-                        break
-                    if isinstance(v, (dict, list)):
-                        _recorre(v, prof + 1)
-                    else:
-                        pares.append(f"{k.replace('_', ' ')} es {v}")
-            elif isinstance(x, list) and x:
-                _recorre(x[0], prof + 1)
-        _recorre(d)
-        if not pares:
-            return "La consulta respondio, pero no encontre datos claros para contar."
-        return "Esto encontre: " + ", ".join(pares) + "."
-
-    narracion = None
-    if agente and agente.cadena_llm:
-        contenido = json.dumps(datos, ensure_ascii=False)[:3000] if not isinstance(datos, str) else datos
-        mensajes = [
-            {"role": "system", "content": (
-                "Te doy el contenido (JSON o texto) de una API publica. Cuentalo "
-                "en espanol, en prosa natural y corta (2 a 4 frases), como se lo "
-                "contarias a alguien en voz alta. Menciona los datos y valores "
-                "concretos que importen. NUNCA digas la palabra 'json', ni "
-                "nombres de campos/llaves tal cual, ni uses formato clave: valor. "
-                "No uses listas ni markdown, solo texto corrido."
-            )},
-            {"role": "user", "content": f"URL: {url}\n\nContenido:\n{contenido}"},
-        ]
-        try:
-            msg = await asyncio.wait_for(agente.cadena_llm.chat_completo(mensajes, None), timeout=12)
-            narracion = (msg.get("content") or "").strip() or None
-        except Exception as e:
-            log.warning("consulta_json: fallo narrar con LLM (%s), uso resumen simple", e)
-    if not narracion:
-        narracion = _resumen_simple(datos) if not isinstance(datos, str) else datos[:200]
-
-    # A partir de aqui todo es "mejor esfuerzo" hacia el dispositivo: la
-    # narracion ya se consiguio (lo caro/lento), asi que si el ESP32 no
-    # esta conectado, o el TTS falla, o lo que sea, el panel igual tiene
-    # que mostrar el texto -- no tiene sentido perderlo por un problema
-    # de audio/hardware que no tiene arreglo desde aca en el momento.
-    if CANAL.vivo:
-        titulo = url.split("//", 1)[-1][:33].upper()
-        try:
-            await CANAL.mostrar("consulta", titulo, [narracion[:120]], "info", 90, 60)
-            # Beep de confirmacion inmediato (no depende del TTS ni del LLM):
-            # asi el ESP32 hace *algo* audible ya mismo aunque la sintesis
-            # de voz tarde o falle.
-            await CANAL.notifica(narracion[:60], "info", beep=True)
-        except Exception as e:
-            log.warning("consulta_json: no se pudo mostrar en el HUD: %s", e)
-        try:
-            audio = await asyncio.to_thread(sintetiza, narracion)
-            if audio:
-                for i in range(0, len(audio), 2048):
-                    await CANAL.send(audio[i:i + 2048])
-                await envia(CANAL.ws, "texto", narracion[:40].upper())
-            else:
-                log.warning("consulta_json: TTS no devolvio audio")
-        except Exception as e:
-            log.warning("consulta_json: fallo el TTS/envio de audio: %s", e)
-    else:
-        log.warning("consulta_json: no hay ESP32 conectado, solo se devuelve el texto")
-
-    return {"ok": True, "narracion": narracion}
-
-
-async def leer_noticias_agente(maximo: int = 3) -> dict:
-    """Trae titulares reales (RSS, sin LLM ni API paga -- no puede fallar por
-    cuota de Bedrock/Groq) y los muestra + dice en el ESP32. Pensado como
-    demo rapida y a prueba de fallos: NTT DATA / tecnologia Chile son las
-    primeras fuentes en noticias.py.
-    """
-    try:
-        titulos = await titulares(maximo)
-    except Exception as e:
-        return {"error": str(e) or type(e).__name__}
-    if not titulos:
-        return {"error": "no se encontraron titulares ahora mismo"}
-
-    frase = "Últimas noticias: " + ". ".join(t.rstrip(".").capitalize() for t in titulos) + "."
-
-    if CANAL.vivo:
-        try:
-            await CANAL.mostrar("noticias", "NOTICIAS",
-                                [{"txt": t[:33]} for t in titulos], "cyan", 80, 60)
-            await CANAL.notifica(titulos[0][:60], "info", beep=True)
-        except Exception as e:
-            log.warning("leer_noticias_agente: no se pudo mostrar en el HUD: %s", e)
-        try:
-            audio = await asyncio.to_thread(sintetiza, frase)
-            if audio:
-                for i in range(0, len(audio), 2048):
-                    await CANAL.send(audio[i:i + 2048])
-                await envia(CANAL.ws, "texto", titulos[0][:40].upper())
-        except Exception as e:
-            log.warning("leer_noticias_agente: fallo el TTS/envio de audio: %s", e)
-    else:
-        log.warning("leer_noticias_agente: no hay ESP32 conectado, solo se devuelve el texto")
-
-    return {"ok": True, "titulares": titulos, "narracion": frase}
 
 
 def sintetiza(texto: str) -> bytes:
@@ -437,10 +310,6 @@ async def atiende_control(ws):
                         await CANAL.send(audio[i:i + 2048])
                     await envia(CANAL.ws, "texto", texto[:40].upper())
                     v = f"Dicho en voz alta: {texto}"
-                elif fn == "consulta_json":
-                    v = await consulta_json_narrada(args["url"])
-                elif fn == "leer_noticias":
-                    v = await leer_noticias_agente()
                 elif fn == "estado":
                     v = CANAL.snapshot()
                 elif fn == "configurar":

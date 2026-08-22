@@ -11,7 +11,6 @@
 #include "version.h"
 #include "bateria.h"
 #include "net.h"
-#include "esp_heap_caps.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -563,32 +562,31 @@ void voice_reporta_estado(void)
         esp_websocket_client_send_text(s_ws, m, n, pdMS_TO_TICKS(200));
 }
 
+// UNICO lector del microfono en todo el firmware.
+//
+// Lee siempre, se este hablando o no, por dos razones:
+//   - Mientras se habla, las muestras van al websocket.
+//   - En reposo, mantienen vivo el medidor de nivel (audio_mic_read actualiza
+//     el nivel de paso), que es lo que alimenta la barra VU y la deteccion de
+//     silencio del HUD.
+// Antes el medidor leia por su cuenta desde hud_render(), y ese segundo
+// lector le robaba muestras al audio que se manda al servidor. Con un solo
+// lector eso no puede volver a pasar.
 static void tarea_mic(void *arg)
 {
     static int16_t buf[512];
     int ciclos = 0;
     while (1) {
-        if (s_talking && s_conn) {
-            size_t got = audio_mic_read(buf, sizeof(buf), 100);
-            if (got) esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
-        } else {
-            // El I2S sigue capturando en su buffer DMA circular todo el
-            // tiempo, se lea o no -- si nadie lo drena mientras se esta en
-            // reposo (sin hablar), se acumula un atraso. Al presionar el
-            // boton para hablar, los primeros audio_mic_read() devolvian
-            // ese audio VIEJO (ruido de ambiente de uno o mas segundos
-            // atras), no lo que se decia en ese instante -- confirmado
-            // analizando una grabacion real: el primer ~1s completo era
-            // ruido, y la voz real recien aparecia despues. Vaciar el
-            // buffer con un timeout de 0 (no bloquea) evita que ese atraso
-            // se acumule, para que al empezar a hablar el audio ya este
-            // sincronizado con el momento real.
-            audio_mic_read(buf, sizeof(buf), 0);
-            vTaskDelay(pdMS_TO_TICKS(20));
-            // Cada ~4 s se publica el estado. Se aprovecha esta tarea en vez
-            // de crear otra: ya esta despierta y ociosa cuando no se habla.
-            if (++ciclos >= 200) { ciclos = 0; voice_reporta_estado(); }
+        size_t got = audio_mic_read(buf, sizeof(buf), 100);
+        if (got && s_talking && s_conn) {
+            esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
         }
+        if (!got) vTaskDelay(pdMS_TO_TICKS(10));   // sin datos: no girar en vacio
+
+        // Cada ~4 s se publica el estado de la placa. Se aprovecha esta tarea
+        // en vez de crear otra. El contador va por lecturas, no por delays:
+        // 512 muestras a 24 kHz son ~21 ms, asi que ~190 vueltas son 4 s.
+        if (++ciclos >= 190) { ciclos = 0; voice_reporta_estado(); }
     }
 }
 

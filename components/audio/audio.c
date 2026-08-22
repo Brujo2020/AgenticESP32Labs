@@ -135,23 +135,44 @@ size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms)
     if (!s_ready) return 0;
     size_t got = 0;
     if (i2s_channel_read(s_rx, dst, bytes, &got, pdMS_TO_TICKS(timeout_ms)) != ESP_OK) return 0;
+    // El nivel se calcula aqui, sobre las muestras que YA se han leido. Ver
+    // audio_mic_level() para por que esto importa tanto.
+    if (got) audio_mide_nivel(dst, got);
     return got;
 }
 
-int audio_mic_level(void)
+// Actualiza el medidor a partir de muestras ya leidas por otro.
+void audio_mide_nivel(const int16_t *muestras, size_t bytes)
 {
-    if (!s_ready) return 0;
-    int16_t buf[256];
-    size_t got = audio_mic_read(buf, sizeof(buf), 0);
-    if (got == 0) return s_level;
     int32_t peak = 0;
-    for (int i = 0; i < (int)(got / sizeof(int16_t)); i++) {
-        int32_t v = buf[i] < 0 ? -buf[i] : buf[i];
+    int n = (int)(bytes / sizeof(int16_t));
+    for (int i = 0; i < n; i++) {
+        int32_t v = muestras[i] < 0 ? -muestras[i] : muestras[i];
         if (v > peak) peak = v;
     }
     int lvl = (int)((peak * 100) / 32768);
     s_level = (s_level * 6 + lvl * 4) / 10;   // suavizado
-    return s_level;
+}
+
+// SOLO consulta: no toca el I2S.
+//
+// Antes esta funcion leia del canal RX por su cuenta, y ahi estaba el
+// problema gordo del reconocimiento de voz: el HUD la llama hasta tres veces
+// por fotograma a 30 fps (barra VU, anillo de escucha y deteccion de
+// silencio), o sea ~90 lecturas por segundo. Cada una se llevaba muestras del
+// MISMO canal del que tarea_mic saca el audio que se manda al servidor.
+//
+// Resultado: mientras hablabas, buena parte de tus muestras se iban al
+// medidor y nunca salian por el websocket. Whisper recibia la frase
+// agujereada y transcribia cualquier cosa -- y el agente contestaba, muy
+// correctamente, a algo que tu no habias dicho. Parecia que "el modelo decia
+// sandeces" cuando en realidad no estaba oyendo la pregunta entera.
+//
+// Ahora hay un unico lector del microfono (tarea_mic) y el nivel se calcula
+// de paso, sobre esas mismas muestras.
+int audio_mic_level(void)
+{
+    return s_ready ? s_level : 0;
 }
 
 void audio_play_pcm(const void *pcm, size_t bytes)

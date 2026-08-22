@@ -14,10 +14,23 @@ bool audio_ready(void);
 void audio_beep(int freq_hz, int ms);
 
 // Nivel de pico del microfono, 0..100, suavizado. Para la barra VU.
+//
+// SOLO CONSULTA: no lee del microfono. Puede llamarse tantas veces por
+// fotograma como haga falta, no cuesta nada y no compite con la captura.
+// (Antes si leia, y le robaba muestras al audio que se envia al servidor:
+// ver el comentario largo en audio.c.)
 int audio_mic_level(void);
 
 // Lee muestras crudas del microfono. Devuelve bytes leidos (0 si no hay).
+// DEBE haber un unico lector en todo el firmware -- hoy es tarea_mic en
+// components/voice. Dos lectores se reparten las muestras y el audio que
+// llega al servidor sale incompleto.
 size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms);
+
+// Actualiza el medidor de nivel con muestras ya leidas. La llama
+// audio_mic_read() sola; solo hace falta invocarla a mano si alguna vez se
+// captura audio por otra via.
+void audio_mide_nivel(const int16_t *muestras, size_t bytes);
 
 // Reproduce PCM 16-bit mono a la frecuencia de la placa.
 void audio_play_pcm(const void *pcm, size_t bytes);

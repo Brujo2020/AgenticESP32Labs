@@ -57,6 +57,21 @@ echo "== 2/5  Compilando =="
 #
 # Se usa un array y NO eval: con eval, una clave con comillas o $ rompia el
 # comando o se expandia sola. Un array pasa cada argumento tal cual.
+# --wifi: pregunta las credenciales por teclado en vez de recibirlas en la
+# linea de comandos. Es la forma recomendada, por dos razones:
+#   - Una clave con !, $, comillas o < > obliga a pelearse con el escapado del
+#     shell; zsh ademas expande el ! aunque este entre comillas dobles y deja
+#     la terminal esperando a que "cierres la comilla".
+#   - Escrita en la linea de comandos, la contrasena queda guardada en el
+#     historial del shell. Leida con read -s, no.
+if [ "$1" = "--wifi" ]; then
+    printf "   Nombre de la red (SSID): "
+    IFS= read -r WIFI_SSID
+    printf "   Contrasena (no se muestra): "
+    IFS= read -rs WIFI_PASS
+    echo
+fi
+
 EXTRA=()
 if [ -n "$WIFI_SSID" ]; then
     # Las comillas y barras del SSID o la clave se escapan: el valor acaba

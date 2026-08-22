@@ -69,9 +69,15 @@ static bool intenta(int idx, int espera_ms)
     const wifi_red_t *r = wifi_red(idx);
     if (!r) return false;
 
+    // memcpy y no snprintf: los campos de wifi_config_t son buffers de tamano
+    // fijo (32 y 64 bytes) que NO exigen terminador nulo -- si el SSID ocupa
+    // los 32, no hay sitio para el. snprintf siempre reserva uno, asi que con
+    // -Werror=format-truncation el compilador avisa (con razon) de que puede
+    // truncar. Con memset previo, lo que sobra queda a cero, que es lo que el
+    // driver espera.
     wifi_config_t wc = {0};
-    snprintf((char *)wc.sta.ssid, sizeof(wc.sta.ssid), "%s", r->ssid);
-    snprintf((char *)wc.sta.password, sizeof(wc.sta.password), "%s", r->pass);
+    memcpy(wc.sta.ssid, r->ssid, strnlen(r->ssid, sizeof(wc.sta.ssid)));
+    memcpy(wc.sta.password, r->pass, strnlen(r->pass, sizeof(wc.sta.password)));
 
     s_retry = 0;
     xEventGroupClearBits(s_evt, BIT_OK | BIT_FAIL);

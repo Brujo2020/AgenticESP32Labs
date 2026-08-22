@@ -451,6 +451,55 @@ async def dispositivo_pantallas():
     return {"ok": True, "resultado": v}
 
 
+class VozIn(BaseModel):
+    texto: str = ("Hola Mario. Si oyes esto con acento espanol, "
+                  "el text to speech esta funcionando como debe.")
+
+
+@app.post("/api/voz/probar", dependencies=router_dep)
+async def voz_probar(body: VozIn):
+    """Sintetiza una frase y devuelve el WAV, para escucharlo en el navegador.
+
+    Comprobar el TTS obligaba a entrar por SSH, lanzar un script, copiar el
+    fichero con scp y reproducirlo a mano -- y cada paso podia fallar por
+    motivos que no tienen nada que ver con la voz (una clave .pem que no
+    esta, por ejemplo). Desde el panel es un boton.
+
+    Ademas separa dos fallos que se confundian: que la placa no suene y que
+    el servidor no genere audio. Esto prueba solo lo segundo.
+    """
+    import io
+    import wave
+
+    from proveedores import cadenas_desde_config
+
+    cfg = panel._config()
+    cadena = cadenas_desde_config(cfg).get("tts")
+    if not cadena or not cadena.activo:
+        raise HTTPException(503, "no hay ningun proveedor de TTS disponible")
+
+    try:
+        pcm = await asyncio.to_thread(cadena.sintetizar, body.texto, 24000)
+    except Exception as e:
+        raise HTTPException(500, f"fallo la sintesis: {e}")
+    if not pcm:
+        raise HTTPException(500, "el proveedor devolvio audio vacio")
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(pcm)
+
+    from fastapi.responses import Response
+    return Response(
+        content=buf.getvalue(), media_type="audio/wav",
+        # El nombre del proveedor viaja en una cabecera para que el panel
+        # pueda decir "sono con piper" sin una segunda peticion.
+        headers={"X-Proveedor": cadena.activo.nombre})
+
+
 @app.get("/api/dispositivo/estado", dependencies=router_dep)
 async def dispositivo_estado():
     """Estado REAL de la placa, no lo ultimo que el panel le mando.
@@ -475,38 +524,6 @@ async def dispositivo_estado():
 @app.post("/api/dispositivo/reiniciar", dependencies=router_dep)
 async def dispositivo_reiniciar():
     v = await _control_llama("reiniciar", {})
-    if isinstance(v, dict) and v.get("error"):
-        raise HTTPException(400, v["error"])
-    return {"ok": True, "resultado": v}
-
-
-class ConsultaIn(BaseModel):
-    url: str
-
-
-@app.post("/api/consulta", dependencies=router_dep)
-async def consulta_json(body: ConsultaIn):
-    """"Pega una URL, te lo cuento": trae el JSON de esa URL y lo hace
-    narrar en espanol por el LLM (nunca llaves/valores crudos), lo manda
-    al HUD y lo dice en voz alta por el altavoz del ESP32.
-
-    Se resuelve del lado del bridge de voz (websocket_bridge.py), que es
-    quien tiene el agente/LLM y el TTS ya cargados -- el mismo patron que
-    'hablar'/'mostrar', solo que este comando hace las tres cosas seguidas
-    (traer, narrar, mostrar+hablar) en una sola llamada de control.
-    """
-    v = await _control_llama("consulta_json", {"url": body.url}, timeout=20)
-    if isinstance(v, dict) and v.get("error"):
-        raise HTTPException(400, v["error"])
-    return {"ok": True, "resultado": v}
-
-
-@app.post("/api/noticias/leer", dependencies=router_dep)
-async def noticias_leer():
-    """Trae titulares reales por RSS (sin LLM) y los muestra + dice en el
-    ESP32. Pensado como demo garantizada: no depende de que Bedrock/Groq
-    esten arriba, solo de que haya internet."""
-    v = await _control_llama("leer_noticias", {}, timeout=15)
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
     return {"ok": True, "resultado": v}

@@ -384,6 +384,19 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
         <div><div class="titulo">Leer respuestas del agente en voz alta</div><small>Si se apaga, el ESP32 solo muestra texto en pantalla</small></div>
         <button class="switch" id="sw-tts-respuestas" onclick="toggleAjusteSimple('tts_leer_respuestas','sw-tts-respuestas')"></button>
       </div>
+
+      <div class="sub" style="margin-top:16px">
+        Escucha aquí cómo suena la voz, sin el ESP32. Prueba solo el servidor:
+        si suena bien aquí y no en la placa, el problema está en el enlace o en
+        el altavoz, no en el TTS.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="voz-texto" style="flex:1;min-width:240px"
+               placeholder="Hola Mario, esto es una prueba de voz">
+        <button class="btn primario" id="btn-voz" onclick="probarVoz()">🔊 Probar voz</button>
+      </div>
+      <div id="voz-resultado" class="aviso oculto"></div>
+      <audio id="voz-audio" controls class="oculto" style="width:100%;margin-top:12px"></audio>
     </div>
   </section>
 
@@ -1099,6 +1112,47 @@ async function guardarAgente(i, btn){
     e.classList.remove("oculto");
   }).catch(() => {});
 })();
+
+// ---- probar la voz sin el ESP32 ----
+async function probarVoz(){
+  const btn = document.getElementById("btn-voz");
+  const aviso = document.getElementById("voz-resultado");
+  const audio = document.getElementById("voz-audio");
+  const texto = document.getElementById("voz-texto").value.trim();
+
+  btn.disabled = true; btn.textContent = "⏳ sintetizando…";
+  aviso.classList.add("oculto");
+  try {
+    // Respuesta binaria: no se puede usar api(), que espera JSON.
+    const r = await fetch("/api/voz/probar", {
+      method: "POST",
+      headers: {...auth(), "Content-Type": "application/json"},
+      body: JSON.stringify(texto ? {texto} : {}),
+    });
+    if (!r.ok) throw new Error((await r.text()) || r.status);
+
+    const quien = r.headers.get("X-Proveedor") || "?";
+    const blob = await r.blob();
+    // El blob se libera al pedir uno nuevo: si no, cada prueba deja en
+    // memoria el audio anterior.
+    if (audio.src) URL.revokeObjectURL(audio.src);
+    audio.src = URL.createObjectURL(blob);
+    audio.classList.remove("oculto");
+    audio.play().catch(() => {});   // si el navegador bloquea el autoplay, quedan los controles
+
+    aviso.className = "aviso info";
+    aviso.textContent = `✅ sintetizado con "${quien}"` +
+      (quien === "groq" ? " — OJO: ese modelo es inglés y leerá el español con acento."
+                        : " — voz en español.");
+    aviso.classList.remove("oculto");
+  } catch(e) {
+    aviso.className = "aviso";
+    aviso.textContent = "⚠️ " + e.message;
+    aviso.classList.remove("oculto");
+  } finally {
+    btn.disabled = false; btn.textContent = "🔊 Probar voz";
+  }
+}
 
 // ================= SINCRONIZACION CON EL DISPOSITIVO =================
 // El panel muestra lo que la placa reporta de verdad (voice_reporta_estado en

@@ -24,11 +24,17 @@
 #define CX 120
 #define CY 120
 
-// DEMO: desactiva temporalmente el push-to-talk (tocar para hablarle) sin
-// tocar nada mas -- el HUD sigue anunciando por voz hora/clima/noticias
-// como siempre (eso no depende de este boton). Poner en 1 para volver a
-// activar la conversacion por voz despues de la demo.
-#define VOZ_ENTRANTE_ACTIVA 0
+// Push-to-talk: tocar el boton central para hablarle al asistente.
+//
+// Estuvo en 0 durante una demo, cuando la conversacion por voz no era fiable:
+// el HUD seguia anunciando hora, clima y noticias (eso no depende de este
+// boton) pero el toque no hacia nada. Se reactiva ahora que el camino
+// completo funciona -- WiFi, puente, STT con el microfono ya sin
+// interferencias, y TTS en espanol con Piper.
+//
+// Se deja como interruptor y no se borra: volver a apagarlo para una demo es
+// cambiar un 1 por un 0.
+#define VOZ_ENTRANTE_ACTIVA 1
 
 static hud_state_t  s_state = ST_IDLE;
 static hud_screen_t s_scr   = SCR_NUCLEO;

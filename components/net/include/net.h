@@ -15,6 +15,11 @@ bool net_connected(void);
 const char *net_ip(void);
 int  net_rssi(void);
 
+// SSID al que se esta conectado ahora, o "" si no hay WiFi. Lo usa el HUD y
+// el reporte de estado al panel: saber a QUE red esta conectada la placa es
+// la mitad del diagnostico cuando no aparece.
+const char *net_ssid_actual(void);
+
 // Hora real por SNTP. Requiere WiFi. Rellena la hora del sistema.
 void net_sync_time(void);
 bool net_time_valid(void);

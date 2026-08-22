@@ -455,6 +455,33 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
     </div>
 
     <div class="tarjeta glass">
+      <h2>Redes WiFi del dispositivo<small>se guardan en la placa, no en el servidor</small></h2>
+      <div class="sub">
+        La placa guarda <b>varias redes</b> y al arrancar se conecta a la que
+        encuentre con mejor señal. Guarda aquí la de casa y la del trabajo una
+        vez, y ya no hay que tocar nada al moverla.
+      </div>
+
+      <div id="wifi-lista" class="pantallas-lista"></div>
+
+      <div class="form-nuevo">
+        <input id="wifi-ssid" placeholder="nombre de la red (SSID)">
+        <input id="wifi-pass" type="password" placeholder="contraseña" style="flex:1;min-width:180px">
+        <button class="btn primario" onclick="guardarWifi()">+ Añadir red</button>
+      </div>
+
+      <div class="aviso">
+        Se aplica al reiniciar la placa, no al instante: cambiar de red en
+        caliente cortaría la conexión por la que viaja esta misma orden.
+      </div>
+      <div class="aviso">
+        ⚠️ El panel va por HTTP sin cifrar, así que la contraseña viaja en claro
+        hasta el servidor. Para tu red de casa, hazlo estando en la misma red —
+        o pon TLS delante del panel antes de usarlo desde fuera.
+      </div>
+    </div>
+
+    <div class="tarjeta glass">
       <h2>Energía &amp; sistema</h2>
       <div id="bateria-info" class="fila"><span>Batería</span><span class="pill neutro">sin datos — requiere telemetría del dispositivo</span></div>
       <button class="btn peligro" style="margin-top:8px" onclick="reiniciarDispositivo()">⏻ Reiniciar ESP32</button>
@@ -1113,6 +1140,57 @@ async function guardarAgente(i, btn){
   }).catch(() => {});
 })();
 
+// ---- redes WiFi guardadas en la placa ----
+function pintarWifi(){
+  const cont = document.getElementById("wifi-lista");
+  const redes = (DISPO && DISPO.redes) || [];
+  const actual = (DISPO && DISPO.ssid) || "";
+  if (!redes.length) {
+    cont.innerHTML = `<div class="sub">${DISPO.conectado
+      ? "La placa no reporta redes guardadas (firmware antiguo)."
+      : "Sin dispositivo conectado: no se puede leer ni cambiar el WiFi."}</div>`;
+    return;
+  }
+  cont.innerHTML = redes.map(s => {
+    const conectada = s === actual;
+    return `<div class="pantalla-item">
+      <span class="num">${conectada ? "📶" : "·"}</span>
+      <span class="nombre">${s}</span>
+      ${conectada ? '<span class="pill ok">conectada</span>' : ""}
+      <button class="btn chico peligro" onclick="borrarWifi('${s.replace(/'/g,"\\'")}')">quitar</button>
+    </div>`;
+  }).join("");
+}
+
+async function guardarWifi(){
+  const ssid = document.getElementById("wifi-ssid").value.trim();
+  const pass = document.getElementById("wifi-pass").value;
+  if (!ssid) { alert("Falta el nombre de la red."); return; }
+  // Se avisa aqui y no solo en el servidor: una clave de 7 caracteres se
+  // guardaria sin queja y la placa no podria conectar, sin decir por que.
+  if (pass && pass.length < 8) {
+    alert("Una clave WPA válida tiene 8 caracteres o más. Revísala.");
+    return;
+  }
+  try {
+    const r = await api("/api/dispositivo/wifi", {method:"POST",
+      body: JSON.stringify({accion:"guardar", ssid, password: pass})});
+    document.getElementById("wifi-ssid").value = "";
+    document.getElementById("wifi-pass").value = "";
+    alert(r.resultado || "guardada");
+    sincronizaDispositivo();
+  } catch(e){ alert("no se pudo guardar: " + e.message); }
+}
+
+async function borrarWifi(ssid){
+  if (!confirm(`¿Quitar la red "${ssid}" de la placa?`)) return;
+  try {
+    await api("/api/dispositivo/wifi", {method:"POST",
+      body: JSON.stringify({accion:"borrar", ssid})});
+    sincronizaDispositivo();
+  } catch(e){ alert("no se pudo quitar: " + e.message); }
+}
+
 // ---- probar la voz sin el ESP32 ----
 async function probarVoz(){
   const btn = document.getElementById("btn-voz");
@@ -1186,10 +1264,13 @@ async function sincronizaDispositivo(){
     tele("Compilado", d.compilado || "—", {off}),
     tele("Batería", (bat==null||bat<0) ? "—" : bat+"%" + (d.cargando?" ⚡":""),
          {off, pct:bat, alerta: bat!=null && bat>=0 && bat<15}),
-    tele("WiFi", d.rssi ? d.rssi+" dBm" : "—", {off}),
+    tele("Red", d.ssid || "—", {off}),
+    tele("IP", d.ip || "—", {off}),
+    tele("Señal", d.rssi ? d.rssi+" dBm" : "—", {off}),
     tele("Memoria", d.heap ? Math.round(d.heap/1024)+" KB" : "—", {off}),
   ].join("");
   document.getElementById("dispo-telemetria").innerHTML = cel;
+  pintarWifi();
 
   // Sincroniza los controles con el estado REAL, salvo mientras el usuario
   // arrastra: pisarle el slider bajo el dedo es lo que hace que un panel se

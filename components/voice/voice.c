@@ -11,6 +11,7 @@
 #include "version.h"
 #include "bateria.h"
 #include "net.h"
+#include "wifi_redes.h"
 #include <string.h>
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -502,6 +503,28 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                     }
                     ajustes_guardar();
                     ESP_LOGI(TAG, "carrusel actualizado: mascara=0x%03X", a->mascara);
+                } else if (!strcmp(tipo, "wifi")) {
+                    // Alta o baja de una red WiFi desde el panel.
+                    // Se guarda en NVS y tiene efecto en el proximo arranque:
+                    // cambiar de red en caliente cortaria justo la conexion
+                    // por la que llego la orden, y el usuario no sabria si
+                    // fallo el guardado o la red nueva.
+                    cJSON *ac  = cJSON_GetObjectItem(j, "accion");
+                    cJSON *ss  = cJSON_GetObjectItem(j, "ssid");
+                    cJSON *pw  = cJSON_GetObjectItem(j, "pass");
+                    const char *accion = cJSON_IsString(ac) ? ac->valuestring : "guardar";
+                    if (cJSON_IsString(ss) && ss->valuestring[0]) {
+                        esp_err_t r;
+                        if (!strcmp(accion, "borrar")) {
+                            r = wifi_red_borra(ss->valuestring);
+                        } else {
+                            r = wifi_red_guarda(ss->valuestring,
+                                                cJSON_IsString(pw) ? pw->valuestring : "");
+                        }
+                        ESP_LOGI(TAG, "wifi %s '%s': %s", accion, ss->valuestring,
+                                 r == ESP_OK ? "ok" : esp_err_to_name(r));
+                        voice_reporta_estado();   // el panel ve la lista al momento
+                    }
                 } else if (!strcmp(tipo, "reiniciar")) {
                     ESP_LOGW(TAG, "reinicio remoto pedido desde el panel");
                     cJSON_Delete(j);
@@ -556,16 +579,29 @@ void voice_reporta_estado(void)
 {
     if (!s_conn || !s_ws) return;
     ajustes_t *a = ajustes();
-    char m[240];
+    char m[520];
     int n = snprintf(m, sizeof(m),
         "{\"t\":\"estado_disp\",\"fw\":\"%s\",\"compilado\":\"%s %s\","
         "\"brillo\":%d,\"volumen\":%d,\"tema\":%d,\"efectos\":%s,"
-        "\"bateria\":%d,\"cargando\":%s,\"heap\":%u,\"rssi\":%d}",
+        "\"bateria\":%d,\"cargando\":%s,\"heap\":%u,\"rssi\":%d,"
+        "\"ip\":\"%s\",\"ssid\":\"%s\"",
         FW_VERSION, FW_FECHA, FW_HORA,
         a->brillo, a->volumen, a->tema, a->efectos ? "true" : "false",
         bateria_disponible() ? bateria_pct() : -1,
         bateria_cargando() ? "true" : "false",
-        (unsigned)esp_get_free_heap_size(), net_rssi());
+        (unsigned)esp_get_free_heap_size(), net_rssi(),
+        net_ip(), net_ssid_actual());
+
+    // Lista de redes guardadas (solo los SSID: la contrasena no sale de la
+    // placa ni siquiera hacia el panel). Asi el panel puede mostrar cuales
+    // tiene y ofrecer borrarlas.
+    if (n > 0 && n < (int)sizeof(m)) {
+        n += snprintf(m + n, sizeof(m) - n, ",\"redes\":[");
+        for (int i = 0; i < wifi_redes_num() && n < (int)sizeof(m) - 40; i++)
+            n += snprintf(m + n, sizeof(m) - n, "%s\"%s\"",
+                          i ? "," : "", wifi_red_ssid(i));
+        n += snprintf(m + n, sizeof(m) - n, "]}");
+    }
     if (n > 0 && n < (int)sizeof(m))
         esp_websocket_client_send_text(s_ws, m, n, pdMS_TO_TICKS(200));
 }

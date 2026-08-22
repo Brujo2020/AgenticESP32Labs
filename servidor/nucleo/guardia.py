@@ -50,15 +50,10 @@ EXIGE = {
     "pregunta_async": "preguntar",
     "consulta": "estado",
     "estado":   "estado",
-    # Trae un JSON externo, lo narra con el LLM y lo dice en voz alta ->
-    # exige la capacidad mas restrictiva de las dos que usa (hablar).
-    "consulta_json": "hablar",
-    # Titulares por RSS (sin LLM): mismo nivel que consulta_json, produce
-    # audio en el device.
-    "leer_noticias": "hablar",
     "configurar": "administrar",
     "reiniciar":  "administrar",
     "pantallas":  "administrar",
+    "wifi":       "administrar",
 }
 
 # Limites de tasa por comando: (llamadas, ventana en segundos).
@@ -75,12 +70,10 @@ LIMITES = {
     "pregunta_async": (6, 60),
     "consulta": (120, 60),
     "estado":   (60, 60),
-    # Cada llamada hace una peticion de red + una llamada al LLM + TTS: mas
-    # caro que 'hablar' solo, por eso un limite mas bajo.
-    "consulta_json": (6, 60),
-    "leer_noticias": (6, 60),
     "configurar": (20, 60),
     "reiniciar":  (2, 300),
+    # Pocas: guardar una red es algo que se hace una vez, no en bucle.
+    "wifi":       (10, 300),
     "pantallas":  (20, 60),
 }
 
@@ -248,22 +241,6 @@ class Guardia:
             return {"qid": self._texto(a.get("qid"), "qid", 12),
                     "__dry_run__": seco}
 
-        if cmd == "consulta_json":
-            url = a.get("url")
-            if not isinstance(url, str) or not url.strip():
-                raise Rechazo("'url' debe ser texto no vacio.")
-            url = url.strip()
-            # No se reusa self._texto: una URL real lleva '&', '?', '=', '~'
-            # que el alfabeto de pantalla (_TEXTO_OK) no admite a proposito.
-            # Aqui el destino no es la pantalla, es una peticion HTTP saliente.
-            if len(url) > 500:
-                raise Rechazo(f"'url' mide {len(url)} caracteres, maximo 500.")
-            if not url.startswith(("http://", "https://")):
-                raise Rechazo("'url' debe empezar con http:// o https://")
-            if any(ord(ch) < 0x20 for ch in url):
-                raise Rechazo("'url' tiene caracteres de control no permitidos.")
-            return {"url": url, "__dry_run__": seco}
-
         if cmd in ("pregunta", "pregunta_async"):
             txt = self._texto(a.get("txt"), "txt", ancho * 2).upper()
             if not txt.strip():
@@ -303,6 +280,25 @@ class Guardia:
             # Los nombres/indices se validan en Canal.pantallas contra la
             # lista real del firmware: aqui solo se acota forma y tamano.
             return {"activas": act, "orden": orden, "__dry_run__": seco}
+
+        if cmd == "wifi":
+            accion = a.get("accion", "guardar")
+            if accion not in ("guardar", "borrar"):
+                raise Rechazo("accion debe ser 'guardar' o 'borrar'.")
+            ssid = a.get("ssid")
+            if not isinstance(ssid, str) or not 1 <= len(ssid) <= 32:
+                raise Rechazo("'ssid' debe tener entre 1 y 32 caracteres.")
+            out = {"accion": accion, "ssid": ssid, "__dry_run__": seco}
+            if accion == "guardar":
+                pw = a.get("password", "") or ""
+                if not isinstance(pw, str) or len(pw) > 64:
+                    raise Rechazo("'password' no puede pasar de 64 caracteres.")
+                # Una WPA valida son 8 o mas; menos de eso suele ser un error
+                # de tecleo, y guardarla deja la placa sin poder conectar.
+                if pw and len(pw) < 8:
+                    raise Rechazo("una clave WPA valida tiene 8 caracteres o mas.")
+                out["password"] = pw
+            return out
 
         if cmd == "reiniciar":
             return {"__dry_run__": seco}

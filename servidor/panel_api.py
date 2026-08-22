@@ -521,6 +521,34 @@ async def dispositivo_estado():
     return v
 
 
+class WifiIn(BaseModel):
+    accion: str = "guardar"          # guardar | borrar
+    ssid: str
+    password: str = ""
+
+
+@app.post("/api/dispositivo/wifi", dependencies=router_dep)
+async def dispositivo_wifi(body: WifiIn):
+    """Guarda o borra una red WiFi en la memoria del ESP32.
+
+    Tiene efecto en el proximo arranque, no al instante: cambiar de red en
+    caliente cortaria la conexion por la que llego la orden.
+
+    AVISO DE SEGURIDAD: la contrasena viaja del navegador al panel y de ahi al
+    dispositivo. Mientras el panel se sirva por HTTP sin TLS, ese trayecto va
+    en claro por internet. Para una red domestica lo razonable es guardarla
+    estando en la misma red, o poner TLS delante del panel.
+    """
+    args = {"accion": body.accion, "ssid": body.ssid.strip(),
+            "password": body.password}
+    if not args["ssid"]:
+        raise HTTPException(400, "hace falta el nombre de la red")
+    v = await _control_llama("wifi", args)
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return {"ok": True, "resultado": v}
+
+
 @app.post("/api/dispositivo/reiniciar", dependencies=router_dep)
 async def dispositivo_reiniciar():
     v = await _control_llama("reiniciar", {})

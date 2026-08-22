@@ -4,6 +4,7 @@
 //  que en el MCP de clima del backend.
 // ============================================================
 #include "net.h"
+#include "wifi_redes.h"
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -20,19 +21,21 @@
 #include "cJSON.h"
 #include "mdns.h"
 
-// ---- Ajusta esto a tu red y tu ubicacion ----
-// DEMO (18 ago 2026): hotspot del celular en vez de la red de casa, para
-// la presentacion en el trabajo. Volver a la red de casa despues si hace
-// falta -- valores anteriores en el historial de git.
-#define WIFI_SSID   "BrUjO-iPhone"
-#define WIFI_PASS   "perrokool"
-// Chile continental es UTC-4 (sin horario de verano en agosto). Estaba en
-// UTC-5 (Peru/Ecuador/Colombia), de ahi la hora "una hora menos" que se
-// notaba en el HUD.
-#define ZONA_HORARIA "<-04>4"          // UTC-4, Chile continental
-// Santiago de Chile (antes tenia las coordenadas de Lima, Peru).
-#define LAT  "-33.45"
-#define LON  "-70.65"
+// Las credenciales WiFi YA NO viven aqui.
+//
+// Estaban escritas en este fichero, que esta versionado: la contrasena del
+// WiFi de casa acababa subida a GitHub en cada commit. Ahora se guardan en
+// NVS, en el propio dispositivo, y se admiten varias (ver wifi_redes.h): la
+// placa se conecta a la que encuentre, asi que funciona en casa y en el
+// trabajo sin recompilar nada.
+//
+// Para sembrar la primera red en una placa recien flasheada se puede
+// compilar una vez con:
+//     idf.py build -DWIFI_SSID_DEFECTO='"MiRed"' -DWIFI_PASS_DEFECTO='"clave"'
+// Solo se usa si NVS esta vacio, y no queda en el repositorio.
+#define ZONA_HORARIA "<-05>5"          // UTC-5
+#define LAT  "-12.05"
+#define LON  "-77.04"
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_evt;
@@ -60,6 +63,28 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+// Aplica una de las redes guardadas y espera a ver si conecta.
+static bool intenta(int idx, int espera_ms)
+{
+    const wifi_red_t *r = wifi_red(idx);
+    if (!r) return false;
+
+    wifi_config_t wc = {0};
+    snprintf((char *)wc.sta.ssid, sizeof(wc.sta.ssid), "%s", r->ssid);
+    snprintf((char *)wc.sta.password, sizeof(wc.sta.password), "%s", r->pass);
+
+    s_retry = 0;
+    xEventGroupClearBits(s_evt, BIT_OK | BIT_FAIL);
+    esp_wifi_disconnect();
+    if (esp_wifi_set_config(WIFI_IF_STA, &wc) != ESP_OK) return false;
+    esp_wifi_connect();
+
+    ESP_LOGI(TAG, "probando '%s'...", r->ssid);
+    EventBits_t b = xEventGroupWaitBits(s_evt, BIT_OK | BIT_FAIL, pdFALSE, pdFALSE,
+                                        pdMS_TO_TICKS(espera_ms));
+    return (b & BIT_OK) != 0;
+}
+
 esp_err_t net_init(void)
 {
     // NVS ya lo inicializa main antes de cargar los ajustes
@@ -72,17 +97,49 @@ esp_err_t net_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &on_evt, NULL, NULL);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_evt, NULL, NULL);
-
-    wifi_config_t wc = { .sta = { .ssid = WIFI_SSID, .password = WIFI_PASS } };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    EventBits_t b = xEventGroupWaitBits(s_evt, BIT_OK | BIT_FAIL, pdFALSE, pdFALSE,
-                                        pdMS_TO_TICKS(12000));
-    if (b & BIT_OK) { ESP_LOGI(TAG, "WiFi OK, IP %s", s_ip); return ESP_OK; }
-    ESP_LOGW(TAG, "WiFi no conecto");
+    // Las credenciales ya no viven en este fichero: se guardan en NVS y hay
+    // varias. Asi la placa funciona en casa y en el trabajo sin reflashear,
+    // y la contrasena deja de estar en el repositorio.
+    wifi_redes_carga();
+    if (wifi_redes_num() == 0) {
+        ESP_LOGE(TAG, "no hay ninguna red WiFi configurada");
+        return ESP_FAIL;
+    }
+
+    // Primero la de mejor senal de entre las que estan al alcance: evita
+    // gastar 12 s intentando conectarse a una red que no esta presente.
+    int mejor = wifi_red_mejor_visible();
+    if (mejor >= 0 && intenta(mejor, 12000)) {
+        ESP_LOGI(TAG, "WiFi OK (%s), IP %s", wifi_red_ssid(mejor), s_ip);
+        return ESP_OK;
+    }
+
+    // El escaneo puede fallar o mentir (redes ocultas, AP que no responde al
+    // probe). Como respaldo se prueban todas por orden, con menos espera.
+    for (int i = 0; i < wifi_redes_num(); i++) {
+        if (i == mejor) continue;
+        if (intenta(i, 8000)) {
+            ESP_LOGI(TAG, "WiFi OK (%s), IP %s", wifi_red_ssid(i), s_ip);
+            return ESP_OK;
+        }
+    }
+
+    ESP_LOGW(TAG, "ninguna de las %d redes guardadas conecto", wifi_redes_num());
     return ESP_FAIL;
+}
+
+const char *net_ssid_actual(void)
+{
+    wifi_ap_record_t ap;
+    static char ssid[WIFI_SSID_MAX];
+    if (s_conn && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        snprintf(ssid, sizeof(ssid), "%s", (const char *)ap.ssid);
+        return ssid;
+    }
+    return "";
 }
 
 bool net_connected(void) { return s_conn; }

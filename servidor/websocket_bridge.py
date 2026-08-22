@@ -350,6 +350,10 @@ async def atiende_control(ws):
                                                args.get("tema_hud"), args.get("efectos"))
                 elif fn == "pantallas":
                     v = await CANAL.pantallas(args.get("activas"), args.get("orden"))
+                elif fn == "wifi":
+                    v = await CANAL.wifi(args.get("accion", "guardar"),
+                                         args.get("ssid", ""),
+                                         args.get("password", ""))
                 elif fn == "reiniciar":
                     v = await CANAL.reiniciar()
                 else:

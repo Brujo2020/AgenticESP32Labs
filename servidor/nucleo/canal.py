@@ -342,6 +342,32 @@ class Canal:
         nombres = [self.PANTALLAS[i] for i in cuerpo["activas"]]
         return f"Carrusel actualizado. Visibles: {', '.join(nombres)}."
 
+    async def wifi(self, accion: str, ssid: str, password: str = "") -> str:
+        """Guarda o borra una red WiFi en la memoria del ESP32.
+
+        Tiene efecto en el PROXIMO arranque, no ahora mismo: cambiar de red en
+        caliente cortaria justo la conexion por la que llego la orden, y desde
+        el panel no se distinguiria "se guardo bien" de "la clave estaba mal".
+
+        La contrasena viaja hasta la placa pero no vuelve: el dispositivo solo
+        reporta los SSID guardados.
+        """
+        if not self.v2:
+            return ("Este firmware no admite configurar el WiFi por el "
+                    "protocolo. Actualiza el firmware.")
+        if accion not in ("guardar", "borrar"):
+            return "accion debe ser 'guardar' o 'borrar'"
+        if not ssid:
+            return "hace falta el nombre de la red (ssid)"
+        cuerpo = {"t": "wifi", "accion": accion, "ssid": ssid}
+        if accion == "guardar":
+            cuerpo["pass"] = password or ""
+        await self._envia(cuerpo)
+        if accion == "borrar":
+            return f"Red '{ssid}' borrada del dispositivo."
+        return (f"Red '{ssid}' guardada en el dispositivo. Se usara la proxima "
+                f"vez que arranque y no encuentre una mejor.")
+
     async def reiniciar(self) -> str:
         """Reinicia el ESP32 (esp_restart). Irreversible en el sentido de que
         corta la sesion de voz en curso -- usar con cuidado, avisar antes."""

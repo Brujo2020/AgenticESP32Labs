@@ -9,6 +9,9 @@ Esto es lo que faltaba: antes los MCP se conectaban pero nunca se invocaban.
 """
 import json, logging, time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
 
 from .config import Config
 from .mcp_pool import MCPPool
@@ -27,16 +30,37 @@ Si no sabes algo y no hay herramienta para averiguarlo, dilo claramente.
 No uses emojis ni markdown: se van a pronunciar."""
 
 
+AJUSTES_PATH = Path(__file__).resolve().parent.parent / "ajustes.yaml"
+
+
+def _lee_ajustes(datos: dict) -> dict:
+    """Los ajustes que edita el panel web.
+
+    Viven en servidor/ajustes.yaml. Estuvieron dentro de config.yaml, pero eso
+    rompia el despliegue: config.yaml esta versionado, asi que tocar un ajuste
+    desde el panel dejaba cambios locales y el siguiente 'git pull' abortaba.
+
+    Se sigue mirando config.yaml como respaldo para no perder los ajustes de
+    una instalacion que todavia no haya migrado.
+    """
+    if AJUSTES_PATH.exists():
+        try:
+            return yaml.safe_load(AJUSTES_PATH.read_text()) or {}
+        except Exception as e:
+            log.warning("ajustes.yaml ilegible (%s); se usan los de config.yaml", e)
+    return (datos or {}).get("ajustes") or {}
+
+
 def _prompt_desde_ajustes(datos: dict) -> tuple[str, list | None]:
-    """Traduce el bloque 'ajustes' de config.yaml (el que escribe el panel web)
-    a lo que el agente realmente usa: prompt de sistema y filtro de herramientas.
+    """Traduce los ajustes del panel web a lo que el agente realmente usa:
+    prompt de sistema y filtro de herramientas.
 
     Sin esto, la ciudad del clima y los agentes del panel eran solo texto
     guardado en un YAML que nadie leia.
 
     Devuelve (prompt_sistema, mcp_permitidos_o_None).
     """
-    aj = (datos or {}).get("ajustes") or {}
+    aj = _lee_ajustes(datos)
     partes = [SISTEMA]
 
     ciudad = ((aj.get("clima") or {}).get("ciudad") or "").strip()

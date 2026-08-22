@@ -145,6 +145,39 @@ def _sintetiza_local(texto: str) -> bytes:
             except OSError: pass
 
 
+def _en_frases(texto: str, minimo: int = 40) -> list[str]:
+    """Parte la respuesta en frases para poder sintetizarlas por separado.
+
+    Es lo que quita la espera larga: en vez de generar TODO el audio y luego
+    mandarlo, se sintetiza la primera frase y empieza a sonar mientras se
+    prepara la siguiente. El usuario oye una respuesta en un par de segundos
+    en lugar de esperar a que termine la frase mas larga.
+
+    'minimo' evita trocear de mas: fragmentos muy cortos suenan entrecortados
+    y cada uno cuesta una llamada al TTS, asi que se acumulan hasta tener algo
+    con sentido prosodico.
+    """
+    import re
+    # Se corta DESPUES del signo, conservandolo: el TTS necesita el punto o la
+    # interrogacion para entonar bien el final de la frase.
+    trozos = re.split(r'(?<=[.!?…])\s+', texto.strip())
+    frases, actual = [], ""
+    for t in trozos:
+        if not t:
+            continue
+        actual = f"{actual} {t}".strip()
+        if len(actual) >= minimo:
+            frases.append(actual)
+            actual = ""
+    if actual:
+        # La cola corta se pega a la frase anterior en vez de ir suelta.
+        if frases and len(actual) < minimo // 2:
+            frases[-1] += " " + actual
+        else:
+            frases.append(actual)
+    return frases or ([texto.strip()] if texto.strip() else [])
+
+
 def _en_lineas(texto: str, ancho: int) -> list[str]:
     """Parte en lineas por palabras: cortar a medias se lee fatal."""
     palabras, lineas, actual = texto.upper().split(), [], ""
@@ -442,9 +475,25 @@ async def atiende(ws):
                     # mentira.
                     if debe_hablar():
                         await envia(ws, "estado", "speaking")
-                        audio = await asyncio.to_thread(sintetiza, respuesta)
-                        for i in range(0, len(audio), 2048):
-                            await envia_raw(ws, audio[i:i + 2048])
+                        # Frase a frase, no todo de golpe. Antes se generaba el
+                        # audio COMPLETO y solo entonces empezaba a sonar: con
+                        # una respuesta de tres frases eran varios segundos de
+                        # silencio con el HUD ya en "speaking". Ahora la
+                        # primera frase suena mientras se sintetiza la
+                        # siguiente, y la espera percibida baja a la de una
+                        # sola frase.
+                        frases = _en_frases(respuesta)
+                        siguiente = asyncio.create_task(
+                            asyncio.to_thread(sintetiza, frases[0]))
+                        for i, _ in enumerate(frases):
+                            audio = await siguiente
+                            # Se lanza ya la sintesis de la proxima, para que
+                            # se prepare mientras esta se esta reproduciendo.
+                            if i + 1 < len(frases):
+                                siguiente = asyncio.create_task(
+                                    asyncio.to_thread(sintetiza, frases[i + 1]))
+                            for k in range(0, len(audio), 2048):
+                                await envia_raw(ws, audio[k:k + 2048])
                     await envia(ws, "estado", "idle")
 
                 except websockets.ConnectionClosed:

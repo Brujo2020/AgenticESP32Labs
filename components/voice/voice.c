@@ -91,12 +91,20 @@ static void tarea_audio(void *arg)
             sonando = true;
         }
 
-        // 40 ms, no 150: mientras se espera, el DMA sigue repitiendo en bucle
-        // el ultimo trozo, y eso se oye como un zumbido al final de cada
-        // frase. Con el colchon de 340 ms por delante, 40 ms de hueco ya
-        // significan "se acabo" sin riesgo de cortar por un jitter de red.
+        // Cuanto esperar antes de dar la racha por terminada.
+        //
+        // El servidor sintetiza la respuesta FRASE A FRASE para que empiece a
+        // sonar antes, asi que entre frase y frase hay huecos normales de unas
+        // decimas. Si se cortara a los 40 ms, cada hueco sonaria como un
+        // tropiezo. Pero tampoco se puede esperar mucho al final: mientras se
+        // espera, el DMA repite en bucle el ultimo trozo y eso se oye como un
+        // zumbido.
+        //
+        // La diferencia la marca el propio servidor: si ya mando "idle" no
+        // queda nada por venir y se corta enseguida; si sigue en "speaking",
+        // lo que hay es un hueco entre frases y conviene aguantar.
         size_t n = xStreamBufferReceive(s_audio_sb, buf, sizeof(buf),
-                                        pdMS_TO_TICKS(40));
+                                        pdMS_TO_TICKS(s_fin_audio ? 40 : 400));
         if (n) {
             audio_play_pcm(buf, n);
         } else if (sonando) {

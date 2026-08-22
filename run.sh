@@ -46,7 +46,28 @@ fi
 echo "   entorno OK ($(command -v idf.py))"
 
 echo "== 2/5  Compilando =="
-idf.py build > "$PROJ/build_out.log" 2>&1
+# Credenciales WiFi de siembra, opcionales:
+#
+#     WIFI_SSID="MiRed" WIFI_PASS="miclave" ./run.sh
+#
+# Solo hacen falta la PRIMERA vez que se flashea una placa, o si se le borro
+# la memoria: despues las redes viven en NVS (ver wifi_redes.h) y se anaden
+# desde el panel. Se pasan por linea de comandos y no en un fichero para que
+# la contrasena del WiFi no acabe versionada, que es donde estuvo hasta ahora.
+#
+# Se usa un array y NO eval: con eval, una clave con comillas o $ rompia el
+# comando o se expandia sola. Un array pasa cada argumento tal cual.
+EXTRA=()
+if [ -n "$WIFI_SSID" ]; then
+    # Las comillas y barras del SSID o la clave se escapan: el valor acaba
+    # dentro de un literal de C, y una comilla suelta no compilaria.
+    _ss=${WIFI_SSID//\\/\\\\}; _ss=${_ss//\"/\\\"}
+    _pw=${WIFI_PASS//\\/\\\\}; _pw=${_pw//\"/\\\"}
+    EXTRA+=("-DWIFI_SSID_DEFECTO=\"$_ss\"")
+    EXTRA+=("-DWIFI_PASS_DEFECTO=\"$_pw\"")
+    echo "   sembrando la red '$WIFI_SSID' (solo si la placa no tiene ninguna)"
+fi
+idf.py build "${EXTRA[@]}" > "$PROJ/build_out.log" 2>&1
 if [ $? -ne 0 ]; then
     echo "FALLO EL BUILD. Ultimas lineas:"
     tail -25 "$PROJ/build_out.log"

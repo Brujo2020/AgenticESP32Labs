@@ -353,7 +353,6 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
   <button data-vista="apariencia">🎨 Apariencia &amp; Simulador</button>
   <button data-vista="datos">🌤️ Clima &amp; Noticias</button>
   <button data-vista="agentes">🤖 Agentes</button>
-  <button data-vista="consulta">🌐 Consulta</button>
   <button data-vista="claves">🔑 Claves</button>
 </nav>
 
@@ -447,27 +446,6 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
       <div id="bateria-info" class="fila"><span>Batería</span><span class="pill neutro">sin datos — requiere telemetría del dispositivo</span></div>
       <button class="btn peligro" style="margin-top:8px" onclick="reiniciarDispositivo()">⏻ Reiniciar ESP32</button>
       <div class="aviso">Corta la sesión de voz en curso. El ESP32 se reconecta solo en unos segundos.</div>
-    </div>
-  </section>
-
-  <!-- CONSULTA: pega cualquier URL con JSON y el ESP32 lo cuenta -->
-  <section id="v-consulta" class="vista">
-    <div class="tarjeta glass">
-      <h2>Consulta cualquier API<small>se muestra en el HUD y se lee en voz alta</small></h2>
-      <div class="sub">Pega la URL de una API pública (JSON). El agente la trae, la cuenta en
-        español con sus propias palabras (no lee llaves ni "clave: valor") y el ESP32 la
-        muestra en pantalla y la dice por el altavoz.</div>
-      <input type="text" id="consulta-url" placeholder="https://api.open-meteo.com/v1/forecast?..." style="width:100%">
-      <button class="btn primario" style="margin-top:10px" onclick="consultarJson()">🔊 Consultar y narrar</button>
-      <div id="consulta-resultado" class="aviso oculto"></div>
-    </div>
-
-    <div class="tarjeta glass">
-      <h2>Noticias NTT DATA / tecnología<small>garantizado, sin LLM</small></h2>
-      <div class="sub">Trae titulares reales por RSS (no depende de Bedrock/Groq) y los muestra
-        + dice en el ESP32. Ideal si el resto falla en plena demo.</div>
-      <button class="btn primario" onclick="leerNoticias()">📰 Leer noticias ahora</button>
-      <div id="noticias-agente-resultado" class="aviso oculto"></div>
     </div>
   </section>
 
@@ -692,8 +670,8 @@ async function onDrop(ev, cadena){
 
 // ---------------- MCP ----------------
 const CONECTORES = [
-  {id:"mac", nombre:"🖥️ Este Mac", tipo:"local"},
-  {id:"claude", nombre:"🤖 Claude Desktop / Code", tipo:"cliente-mcp"},
+  {id:"mac", nombre:"🖥️ Tu Mac", tipo:"local"},
+  {id:"claude", nombre:"🤖 Claude Desktop / Code / Cursor", tipo:"cliente-mcp"},
   {id:"unity", nombre:"🎮 Unity", tipo:"mcp"},
   {id:"blender", nombre:"🧱 Blender", tipo:"mcp"},
 ];
@@ -734,31 +712,6 @@ async function crearMcp(){
     cargarMcp();
   } catch(e){ alert("no se pudo crear: " + e.message); }
 }
-async function consultarJson(){
-  const url = document.getElementById("consulta-url").value.trim();
-  const res = document.getElementById("consulta-resultado");
-  res.classList.remove("oculto");
-  if (!url) { res.textContent = "pega una URL primero"; return; }
-  res.textContent = "consultando y narrando… (puede tardar unos segundos)";
-  try {
-    const r = await api("/api/consulta", {method:"POST", body: JSON.stringify({url})});
-    res.textContent = "🔊 " + (r.resultado?.narracion || "hecho");
-  } catch(e){
-    res.textContent = "no se pudo: " + e.message;
-  }
-}
-async function leerNoticias(){
-  const res = document.getElementById("noticias-agente-resultado");
-  res.classList.remove("oculto");
-  res.textContent = "buscando titulares…";
-  try {
-    const r = await api("/api/noticias/leer", {method:"POST"});
-    const t = (r.resultado?.titulares || []).join(" · ");
-    res.textContent = "📰 " + (t || r.resultado?.narracion || "hecho");
-  } catch(e){
-    res.textContent = "no se pudo: " + e.message;
-  }
-}
 async function reiniciarVoz(){
   try { await api("/api/servicio-voz/reiniciar", {method:"POST"}); alert("reiniciado"); }
   catch(e){ alert("fallo: " + e.message); }
@@ -793,14 +746,58 @@ function mostrarConexion(nombreMcp, cliente){
 `Descripción: ${m ? m.descripcion : ""}\n` +
 `También disponible como MCP remoto vía este servidor si conectas por SSE/stdio bridge.`;
   } else if (cliente === "mac") {
-    snippet = `Este servidor YA corre en tu Mac o en AWS. Los MCP locales (mac, sistema, clima)\n` +
-`se conectan directo por stdio — no necesitas nada extra: actívalos en la pestaña "MCP".`;
+    snippet =
+`El ESP32 como herramienta de tu Mac, en un comando (dentro del repo):
+
+    python3 tools/conectar_clientes.py
+
+Con eso cualquier agente que corra en tu Mac -- Claude Desktop, Claude Code,
+Cursor -- puede pintar en el HUD, avisarte, hablar por el altavoz y pedirte
+aprobacion fisica en la pantalla antes de algo irreversible.
+
+Los MCP que corren EN el servidor (clima, sistema, mac) se activan aparte, en
+la pestana MCP de este panel: son procesos del servidor, no de tu Mac.
+
+Comprobar sin tocar nada:
+    python3 tools/conectar_clientes.py --revisar`;
   } else if (cliente === "claude") {
-    snippet = `1. Abre la config de Claude Desktop (Settings → Developer → Edit Config) o\n` +
-`   ~/.claude.json para Claude Code.\n` +
-`2. Agrega cada MCP activo, ej.:\n\n` +
-`"mcpServers": {\n  "dispositivo": {\n    "command": "python3",\n    "args": ["${'{'}ruta-del-repo${'}'}/servidor/mcps/dispositivo.py"],\n    "env": { "HUD_BRIDGE": "ws://56.125.193.142:8765" }\n  }\n}\n\n` +
-`3. Reinicia Claude Desktop/Code. El ESP32 aparece como herramienta (hud_mostrar, hud_preguntar, hablar...).`;
+    snippet =
+`LO MAS RAPIDO — un comando en tu Mac, dentro del repo:
+
+    python3 tools/conectar_clientes.py
+
+Detecta Claude Desktop, Claude Code, Cursor y Windsurf, y configura el ESP32
+en los que tengas instalados. Hace copia de seguridad de cada fichero antes
+de tocarlo y solo anade la entrada "esp32": el resto de tus MCP se conserva.
+
+    python3 tools/conectar_clientes.py --revisar    solo comprueba, no escribe
+    python3 tools/conectar_clientes.py --quitar     deshace la instalacion
+
+
+A MANO, si lo prefieres. En la seccion "mcpServers" de tu cliente:
+
+"esp32": {
+  "command": "<repo>/servidor/venv/bin/python3",
+  "args":    ["<repo>/servidor/mcps/dispositivo.py"],
+  "env": {
+    "HUD_BRIDGE": "ws://${location.hostname}:8765",
+    "PYTHONPATH": "<repo>/servidor"
+  }
+}
+
+Importante: usa el python del venv del servidor, no el del sistema. Ahi estan
+"mcp" y "websockets"; con otro Python el cliente arranca el proceso, falla el
+import y el servidor sale en rojo sin decir por que.
+
+Donde vive la config de cada uno:
+  Claude Desktop  ~/Library/Application Support/Claude/claude_desktop_config.json
+  Claude Code     ~/.claude.json
+  Cursor          ~/.cursor/mcp.json
+  Windsurf        ~/.codeium/windsurf/mcp_config.json
+
+Reinicia el cliente y prueba con:
+  "muestrame en el ESP32 el estado del build"
+  "preguntame en la pantalla antes de borrar esa rama"`;
   } else if (cliente === "unity") {
     snippet = `1. Instala el paquete Unity MCP en tu proyecto (com.coplaydev.unity-mcp).\n` +
 `2. Activa el MCP "unity" en la pestaña MCP de este panel.\n` +

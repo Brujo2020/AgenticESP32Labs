@@ -592,6 +592,14 @@ async def atiende(ws):
                     for trozo in _en_lineas(respuesta, 33)[:3]:
                         await envia(ws, "ia", trozo)
 
+                    # DEBUG TEMPORAL: log explicito del valor real de
+                    # debe_hablar() y del contenido crudo que esta leyendo,
+                    # para dejar de adivinar por que el bloque de sintesis
+                    # no deja rastro en el log. Quitar una vez confirmado.
+                    _dh = debe_hablar()
+                    log.info("debe_hablar()=%s  ajustes_actuales()=%s  path=%s",
+                              _dh, ajustes_actuales(), _AJUSTES_PATH)
+
                     # Con la lectura por voz apagada en el panel, la respuesta
                     # se muestra en pantalla y ya: ni se sintetiza (no se gasta
                     # cuota de TTS) ni se pone el HUD en "speaking", que seria

@@ -464,6 +464,24 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_conn = false; ESP_LOGW(TAG, "desconectado"); break;
+    case WEBSOCKET_EVENT_ERROR: {
+        // Sin esto la placa solo decia "sin servidor" y no habia forma de
+        // saber si el problema era: servidor caido, puerto cerrado (firewall
+        // Lightsail), IP/host mal, o un handshake HTTP rechazado. El cliente
+        // SI trae todo este detalle -- antes se tiraba sin loguear.
+        const char *tipo =
+            (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT) ? "TCP/transporte (host inalcanzable, timeout o conexion rechazada)"
+          : (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT)  ? "PONG timeout (el servidor dejo de responder)"
+          : (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_HANDSHAKE)    ? "handshake HTTP rechazado"
+          : (e->error_handle.error_type == WEBSOCKET_ERROR_TYPE_SERVER_CLOSE) ? "servidor cerro la conexion"
+          : "desconocido";
+        ESP_LOGE(TAG, "ERROR websocket: %s | errno socket=%d | esp_err=0x%x | http_status=%d",
+                 tipo,
+                 e->error_handle.esp_transport_sock_errno,
+                 e->error_handle.esp_tls_last_esp_err,
+                 e->error_handle.esp_ws_handshake_status_code);
+        break;
+    }
     case WEBSOCKET_EVENT_DATA:
         if (e->op_code == 0x02 || e->op_code == 0x00) {
             // Binario (0x02) o continuacion de un binario fragmentado (0x00):
@@ -586,8 +604,10 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                     } else if (!strcmp(tipo, "texto")) {
                         snprintf(s_text, sizeof(s_text), "%s", v->valuestring);
                     } else if (!strcmp(tipo, "tu")) {          // lo que se entendio
+                        ESP_LOGI(TAG, "STT 'tu': \"%s\"", v->valuestring);
                         hist_push(v->valuestring, true);
                     } else if (!strcmp(tipo, "ia")) {          // lo que responde
+                        ESP_LOGI(TAG, "respuesta 'ia': \"%s\"", v->valuestring);
                         hist_push(v->valuestring, false);
                     } else if (!strcmp(tipo, "noticia")) {     // titular
                         if (s_news_n < VOZ_NOTICIAS)
@@ -828,7 +848,8 @@ const char *voice_text(void) { return s_text; }
 
 void voice_talk_start(void)
 {
-    if (!s_conn) return;
+    if (!s_conn) { ESP_LOGW(TAG, "talk_start ignorado: sin conexion"); return; }
+    ESP_LOGI(TAG, "talk_start: empieza a escuchar");
     s_talking = true;
     s_state = VOZ_ESCUCHANDO;
     snprintf(s_text, sizeof(s_text), "TE ESCUCHO");
@@ -836,7 +857,9 @@ void voice_talk_start(void)
 
 void voice_talk_stop(void)
 {
-    if (!s_talking) return;
+    if (!s_talking) { ESP_LOGW(TAG, "talk_stop ignorado: no estaba escuchando"); return; }
+    ESP_LOGI(TAG, "talk_stop: fin de la escucha, %lu descartes / %lu secos hasta ahora",
+             (unsigned long)s_n_descartes, (unsigned long)s_n_secos);
     s_talking = false;
     // OJO: iba con la longitud a mano puesta a 10, un byte corto de los 11
     // reales ("{\"t\":\"fin\"}") -- mandaba "{"t":"fin"" sin cerrar. El

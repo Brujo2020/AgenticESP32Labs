@@ -68,7 +68,34 @@ static void tarea_hora(void *arg)
 
 static void tarea_red(void *arg)
 {
-    if (net_init() == ESP_OK) {
+    // net_init() devuelve ESP_FAIL si el PRIMER intento de asociacion no
+    // cuadra dentro de su ventana (p.ej. un rechazo transitorio del AP,
+    // "motivo 2/contrasena incorrecta" que en realidad no lo es -- se ha
+    // visto asociar bien 2 s despues sin cambiar nada). net_init() deja
+    // igualmente la reconexion automatica puesta (s_autoreconecta=true) y
+    // sigue intentando en segundo plano.
+    //
+    // El bug real: aqui se hacia "if (net_init()==ESP_OK) voice_init(...)".
+    // Si el primer intento fallaba, voice_init() NUNCA se llamaba, ni
+    // siquiera cuando el WiFi conectaba solo segundos despues -- esta tarea
+    // ya se habia borrado. Resultado: WiFi con IP real, pero el HUD se
+    // quedaba en "sin servidor" para siempre, hasta reiniciar la placa.
+    //
+    // Arreglo: no importa si net_init() acerto a la primera. Se espera a
+    // que haya conexion DE VERDAD (net_connected(), que el manejador de
+    // eventos pone a true en cuanto llega cualquier IP, sea del intento
+    // inicial o de un reintento en segundo plano) y AHI se abre la voz.
+    net_init();
+
+    const int ESPERA_MAX_MS = 30000;   // cubre el reintento en background
+    const int PASO_MS = 200;
+    int esperado = 0;
+    while (!net_connected() && esperado < ESPERA_MAX_MS) {
+        vTaskDelay(pdMS_TO_TICKS(PASO_MS));
+        esperado += PASO_MS;
+    }
+
+    if (net_connected()) {
         xTaskCreate(tarea_hora, "hora", 4096, NULL, 3, NULL);
         xTaskCreate(tarea_clima, "clima", 4096, NULL, 4, NULL);
 
@@ -80,6 +107,9 @@ static void tarea_red(void *arg)
         // esto se puede reactivar.
         ESP_LOGI(TAG, "conectando a %s:%d", SERVIDOR_HOST, SERVIDOR_PORT);
         voice_init(SERVIDOR_HOST, SERVIDOR_PORT);
+    } else {
+        ESP_LOGE(TAG, "sin WiFi tras %d ms: no se intenta conectar la voz "
+                      "(revisar credenciales o alcance de la red)", ESPERA_MAX_MS);
     }
     s_red_lista = true;
     vTaskDelete(NULL);

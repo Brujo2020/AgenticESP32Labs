@@ -17,7 +17,7 @@ class TTSMacOS(ProveedorTTS):
     def disponible(self) -> bool:
         return os.path.exists("/usr/bin/say")
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         aiff = tempfile.NamedTemporaryFile(suffix=".aiff", delete=False).name
         raw = tempfile.NamedTemporaryFile(suffix=".raw", delete=False).name
         try:
@@ -116,7 +116,7 @@ class TTSPiper(ProveedorTTS):
             return False
         return self._comando() is not None
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         cmd = self._comando()
         if cmd is None:
             raise ErrorProveedor(
@@ -180,7 +180,7 @@ class TTSPolly(ProveedorTTS):
             self._cliente = boto3.client("polly", region_name=self.region)
         return self._cliente
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         try:
             cliente = self._boto()
             resp = cliente.synthesize_speech(
@@ -219,7 +219,7 @@ class TTSOpenAICompatible(ProveedorTTS):
     def disponible(self) -> bool:
         return bool(self.api_key)
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         try:
             r = httpx.post(f"{self.base_url}/audio/speech",
                            headers={"Authorization": f"Bearer {self.api_key}"},
@@ -255,7 +255,7 @@ class TTSOpenAICompatibleWav(TTSOpenAICompatible):
         cfg = {**cfg, "response_format": "wav"}
         super().__init__(nombre, cfg)
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         wav_bytes = super().sintetizar(texto, sample_rate)
         try:
             with wave.open(io.BytesIO(wav_bytes), "rb") as w:

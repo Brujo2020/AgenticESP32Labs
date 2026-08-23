@@ -34,7 +34,7 @@ class ProveedorTTS(Proveedor):
     capacidad = "tts"
 
     @abstractmethod
-    def sintetizar(self, texto: str, sample_rate: int = 24000) -> bytes: ...
+    def sintetizar(self, texto: str, sample_rate: int = 16000) -> bytes: ...
 
 
 class ErrorProveedor(RuntimeError):

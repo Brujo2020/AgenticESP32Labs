@@ -7,12 +7,45 @@ CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
-# PSRAM 8MB en modo QUAD (no octal: el forzado a octal tumbaba el boot)
-# PSRAM DESACTIVADA a proposito.
-# El framebuffer (240x240x2 = 115KB) cabe en la RAM interna del S3 (512KB),
-# y la init de PSRAM es lo mas fragil del arranque. Se reactiva mas adelante,
-# cuando haga falta para buffers de audio, y con el modo ya verificado.
-# CONFIG_SPIRAM=y
+# ---------------- PSRAM 8MB ----------------
+# ACTIVADA. La nota anterior decia "se reactiva cuando haga falta para buffers
+# de audio": es ahora. El reparto queda asi:
+#
+#   PSRAM   framebuffer 115 kB + colchon de audio 19 kB + pre-roll 10 kB
+#           + buffers de WiFi/lwIP  ->  ~190 kB liberados de RAM interna
+#   INTERNA franjas DMA del LCD (38 kB) y todo lo que toque un DMA
+#
+# Es el mismo reparto que hace Xiaozhi: buffer de dibujo en PSRAM, buffer de
+# transferencia en interna.
+#
+# MODO OCTAL: el N16R8 lleva PSRAM octal (la "R8" es precisamente eso). El
+# panic de boot que se documento antes venia del proyecto Arduino, donde
+# memory_type=qio_opi forzaba ADEMAS el flash a OPI; aqui el flash sigue en
+# DIO y no hay conflicto de pines.
+#
+# SI ESTO TUMBA EL ARRANQUE: comentar las cuatro lineas de abajo y volver a
+# compilar. El firmware arranca igual sin PSRAM -- display.c y voice.c piden
+# PSRAM primero y caen a RAM interna si no la hay. No hay ningun camino que
+# dependa de que exista.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# Mueve los buffers de WiFi y lwIP a PSRAM cuando puede. Es la opcion que mas
+# RAM interna libera sin tocar una linea de codigo: son decenas de kB en
+# buffers de recepcion que hoy compiten con el resto del firmware.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# Umbral: las reservas menores de 4 kB siguen yendo a RAM interna. Las
+# pequenas y frecuentes sufren mas la latencia de la PSRAM, y ademas hay
+# codigo (drivers, ISR) que asume memoria interna sin decirlo.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# Colchon de RAM interna que malloc() NUNCA entrega desde PSRAM. Sin esto, el
+# dia que la PSRAM se llene, una reserva interna critica (DMA, ISR) puede
+# fallar en caliente.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
 # CPU a full
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

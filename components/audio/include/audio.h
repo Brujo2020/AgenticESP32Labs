@@ -35,6 +35,13 @@ void audio_mide_nivel(const int16_t *muestras, size_t bytes);
 // Reproduce PCM 16-bit mono a la frecuencia de la placa.
 void audio_play_pcm(const void *pcm, size_t bytes);
 
+// Amplificador bajo demanda. audio_play_pcm/audio_beep ya lo encienden solos;
+// esto es para el caso en que se quiera anticipar el encendido (por ejemplo al
+// recibir "speaking" del servidor, antes de que llegue el primer byte) y que
+// el "pop" quede en el silencio previo y no sobre la primera silaba.
+void audio_pa(bool on);
+bool audio_pa_encendido(void);
+
 // Llena los buffers DMA de silencio. Hay que llamarlo al terminar CUALQUIER
 // reproduccion: el canal se creo sin auto_clear, asi que si no, el DMA se
 // queda repitiendo en bucle lo ultimo que sonara. Ver el comentario largo en

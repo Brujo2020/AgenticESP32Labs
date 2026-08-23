@@ -111,7 +111,7 @@ class Cadena:
                 self._degradar(p)
         raise ultimo or RuntimeError("sin proveedor de stt")
 
-    def sintetizar(self, texto, sample_rate=24000) -> bytes:
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
         ultimo = None
         for p in list(self.miembros):
             try:

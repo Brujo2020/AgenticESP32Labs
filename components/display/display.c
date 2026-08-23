@@ -67,9 +67,37 @@ esp_err_t display_init(void)
     ledc_channel_config(&ch);
     display_set_brightness(85);
 
-    s_fb    = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+    // ---------- Reparto de memoria ----------
+    // El framebuffer son 240x240x2 = 115 kB, con diferencia el mayor consumidor
+    // de RAM interna de todo el firmware. Y NO necesita estar ahi: al panel no
+    // se le manda por DMA desde el framebuffer, sino desde las franjas
+    // (s_strip). El framebuffer solo lo toca la CPU.
+    //
+    // Es el mismo reparto que hace Xiaozhi con LVGL: buffer de dibujo en
+    // PSRAM, buffer de transferencia en RAM interna con capacidad DMA.
+    //
+    // El acceso a PSRAM es mas lento que a la interna, pero los dos patrones
+    // de uso del framebuffer son secuenciales (el memcpy por filas de
+    // display_flush y los barridos de efectos), que es justo donde la cache
+    // funciona bien. Los accesos dispersos (display_px_glow) son pocos.
+    //
+    // Fallback deliberado: si la PSRAM no esta activada o falla su init, se
+    // pide a la interna y todo sigue funcionando exactamente como antes. Este
+    // firmware NO puede dejar de arrancar por culpa de la PSRAM -- ver la nota
+    // de sdkconfig.defaults sobre el panic de boot.
+    s_fb = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (s_fb) {
+        ESP_LOGI(TAG, "framebuffer en PSRAM (%d kB de RAM interna liberados)",
+                 (int)(W * H * sizeof(uint16_t) / 1024));
+    } else {
+        s_fb = heap_caps_malloc(W * H * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+        ESP_LOGW(TAG, "sin PSRAM: framebuffer en RAM interna");
+    }
+
+    // Las franjas SI son DMA de verdad: se quedan en interna sin discusion.
     for (int i = 0; i < N_STRIPS; i++) {
-        s_strip[i] = heap_caps_malloc(W * STRIP * sizeof(uint16_t), MALLOC_CAP_DMA);
+        s_strip[i] = heap_caps_malloc(W * STRIP * sizeof(uint16_t),
+                                      MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         ESP_RETURN_ON_FALSE(s_strip[i], ESP_ERR_NO_MEM, TAG, "sin memoria DMA");
     }
     s_libre = xSemaphoreCreateCounting(N_STRIPS, N_STRIPS);

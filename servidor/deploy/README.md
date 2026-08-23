@@ -58,14 +58,14 @@ estaba abierto para el WebSocket de voz).
   0.0.0.0/0, ya que el trafico va sin cifrar sin el paso de TLS de mas
   abajo).
 
-El panel queda en `http://56.125.193.142:8766/`, pidiendo el `PANEL_TOKEN`
+El panel queda en `http://15.229.88.144:8766/`, pidiendo el `PANEL_TOKEN`
 de arriba para entrar. El bridge de voz (`agentic-voz`) es independiente: si
 el panel se cae, la voz sigue -- confirma el criterio de aceptacion de
 `specs/001-panel-administracion-mcp/spec.md`.
 
 ## Mas adelante: dominio + TLS
 
-Si en algun momento hay un dominio apuntando a `56.125.193.142`, se puede
+Si en algun momento hay un dominio apuntando a `15.229.88.144`, se puede
 poner nginx delante y candado real. Ahi conviene volver
 `agentic-panel.service` a escuchar solo en `127.0.0.1` (nginx hace de unica
 puerta publica) -- cambiar `--host 0.0.0.0` por `--host 127.0.0.1` en el

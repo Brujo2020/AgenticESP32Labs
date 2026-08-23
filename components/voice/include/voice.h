@@ -97,3 +97,12 @@ bool voice_v2_activo(void);
 // cada pocos segundos y al conectar; tambien puede llamarse tras cambiar un
 // ajuste en la propia pantalla, para que el panel web se entere al momento.
 void voice_reporta_estado(void);
+
+// ---- Diagnostico del camino de audio ----
+// Dos contadores que miden si el regulador del servidor (Ritmo/COLCHON_S en
+// websocket_bridge.py) esta bien ajustado:
+//   descartes -> llega demasiado rapido y se tira audio (cortes)
+//   secos     -> llega demasiado tarde y el altavoz se queda sin datos
+// Lo sano es que AMBOS se queden en 0 durante una respuesta larga.
+uint32_t voice_audio_descartes(void);
+uint32_t voice_audio_secos(void);

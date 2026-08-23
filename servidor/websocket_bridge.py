@@ -25,7 +25,11 @@ from proveedores import cadenas_desde_config
 from noticias import titulares
 from telemetria import lineas_mac, lineas_creativo
 
-SAMPLE_RATE = 24000
+# 16000 y no 24000: es la tasa nativa de Polly (pcm), de Transcribe y de las
+# voces x_low de Piper. Con 24000 habia que resamplear con audioop.ratecv
+# (lineal, sin filtro anti-imagen) y eso era el metalico de la voz.
+# Debe coincidir con BOARD_SAMPLE_RATE del firmware.
+SAMPLE_RATE = 16000
 HOST, PORT = "0.0.0.0", 8765
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -256,6 +260,67 @@ async def envia(ws, tipo, valor):
     await envia_raw(ws, json.dumps({"t": tipo, "v": valor}))
 
 
+# ============================================================
+#  Ritmo de envio del audio
+# ============================================================
+# EL PROBLEMA QUE RESUELVE (era la causa de los cortes):
+#
+# Antes esto era un simple bucle que volcaba la frase entera en el socket tan
+# rapido como el TCP la aceptara. Los numeros no cuadran ni de lejos:
+#
+#     frase de 3 s a 16 kHz 16-bit .... 96 000 bytes
+#     colchon del ESP32 (AUDIO_MS_BUF)  19 200 bytes
+#
+# Y en voice.c el volcado al colchon es xStreamBufferSend(..., 0): timeout
+# CERO, o sea que lo que no cabe SE TIRA. De ahi el aviso que ya salia en el
+# monitor: "audio: se descarto un trozo". Eso era el corte, y lo unico que
+# lo mantenia a raya era la ventana TCP del ESP32 -- es decir, por accidente,
+# no por diseno. En cuanto el WiFi iba fino, se perdia media frase.
+#
+# COMO SE ARREGLA: el que conoce la duracion del audio es el productor, asi
+# que la regulacion va aqui. Es un reloj virtual: se lleva la cuenta de
+# cuantos segundos de audio se han mandado y se compara con los segundos de
+# reloj transcurridos. Se permite ir por delante COLCHON_S como mucho.
+#
+# Por que un reloj virtual y no un sleep fijo por trozo: si la red se atasca
+# un momento, el adelanto se consume solo y NO se duerme -- se recupera el
+# ritmo sin acumular retraso. Un sleep fijo sumaria el atasco a la espera y
+# el audio se iria quedando atras hasta vaciar el colchon.
+#
+# Xiaozhi no necesita nada de esto porque manda Opus: la misma frase de 3 s
+# son 6 kB y cabe entera en cualquier colchon. La compresion ES su control de
+# flujo. Mientras aqui se mande PCM, este regulador hace ese papel.
+TROZO_AUDIO = 2048                       # 1024 muestras = 64 ms a 16 kHz
+COLCHON_S   = 0.40                       # adelanto maximo permitido
+BYTES_POR_S = SAMPLE_RATE * 2            # 16-bit mono
+
+
+class Ritmo:
+    """Regulador de una respuesta completa (todas sus frases).
+
+    Vive mas alla de una sola frase a proposito: si se reiniciara en cada una,
+    el colchon acumulado se perderia y entre frase y frase habria un hueco
+    audible justo cuando MENOS sobra tiempo (el TTS de la siguiente ya viene
+    con su propia latencia).
+    """
+
+    def __init__(self):
+        self._t0 = None
+        self._audio_s = 0.0
+
+    async def envia(self, ws, audio: bytes):
+        loop = asyncio.get_running_loop()
+        if self._t0 is None:
+            self._t0 = loop.time()
+        for k in range(0, len(audio), TROZO_AUDIO):
+            trozo = audio[k:k + TROZO_AUDIO]
+            await envia_raw(ws, trozo)
+            self._audio_s += len(trozo) / BYTES_POR_S
+            adelanto = self._audio_s - (loop.time() - self._t0)
+            if adelanto > COLCHON_S:
+                await asyncio.sleep(adelanto - COLCHON_S)
+
+
 def ajustes_actuales() -> dict:
     """Bloque 'ajustes' de config.yaml, releido si el panel lo cambio.
 
@@ -339,8 +404,10 @@ async def atiende_control(ws):
                 elif fn == "hablar":
                     texto = args["texto"]
                     audio = await asyncio.to_thread(sintetiza, texto)
-                    for i in range(0, len(audio), 2048):
-                        await CANAL.send(audio[i:i + 2048])
+                    # Mismo regulador que la respuesta de voz: este camino
+                    # (una herramienta MCP pidiendo hablar) tenia el mismo
+                    # volcado sin ritmo y por tanto los mismos cortes.
+                    await Ritmo().envia(CANAL.ws, audio)
                     await envia(CANAL.ws, "texto", texto[:40].upper())
                     v = f"Dicho en voz alta: {texto}"
                 elif fn == "estado":
@@ -489,6 +556,8 @@ async def atiende(ws):
                         frases = _en_frases(respuesta)
                         siguiente = asyncio.create_task(
                             asyncio.to_thread(sintetiza, frases[0]))
+                        # Un unico Ritmo para toda la respuesta: ver su clase.
+                        ritmo = Ritmo()
                         for i, _ in enumerate(frases):
                             audio = await siguiente
                             # Se lanza ya la sintesis de la proxima, para que
@@ -496,8 +565,7 @@ async def atiende(ws):
                             if i + 1 < len(frases):
                                 siguiente = asyncio.create_task(
                                     asyncio.to_thread(sintetiza, frases[i + 1]))
-                            for k in range(0, len(audio), 2048):
-                                await envia_raw(ws, audio[k:k + 2048])
+                            await ritmo.envia(ws, audio)
                     await envia(ws, "estado", "idle")
 
                 except websockets.ConnectionClosed:

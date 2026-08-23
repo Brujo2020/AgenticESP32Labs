@@ -5,6 +5,8 @@
 //  El servidor devuelve estado, texto y el audio de la respuesta.
 // ============================================================
 #include "voice.h"
+#include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "ajustes.h"
@@ -55,12 +57,39 @@ static int  s_cre_n = 0;
 // Ahora el manejador solo copia a un stream buffer (no bloquea) y una tarea
 // aparte alimenta el I2S de forma continua. El colchon absorbe el jitter de
 // la red, que es justo lo que faltaba.
-#define AUDIO_BUF_BYTES   (16 * 1024)   // ~340 ms a 24 kHz 16-bit mono
-#define AUDIO_PREBUFFER   (4 * 1024)    // no empieza hasta tener este colchon
+// Los tamanos van en TIEMPO, no en bytes sueltos: al pasar de 24 kHz a 16 kHz
+// los mismos 16 kB pasaban de 340 ms a 512 ms de latencia sin que nadie lo
+// pidiera. Expresarlo asi hace que cambiar la tasa no mueva el comportamiento.
+// 600 ms de colchon contra 400 ms de adelanto maximo del servidor (COLCHON_S
+// en websocket_bridge.py). Los 200 ms de diferencia son el margen para el
+// jitter de la red: si el regulador y el colchon fueran iguales, cualquier
+// rafaga tardia desbordaria.
+//
+// Coste: 600 ms x 32 kB/s = 19.2 kB de RAM interna. La S3 tiene 512 kB, y el
+// audio partido es mucho mas caro que 19 kB.
+//
+// Los 120 ms de prebufer son ~2 trozos del servidor: suficiente para que el
+// primero no arranque en seco, sin retrasar visiblemente el inicio.
+#define AUDIO_MS_BUF      600
+#define AUDIO_MS_PREBUF   120
+#define AUDIO_BUF_BYTES   (BOARD_SAMPLE_RATE * 2 * AUDIO_MS_BUF / 1000)
+#define AUDIO_PREBUFFER   (BOARD_SAMPLE_RATE * 2 * AUDIO_MS_PREBUF / 1000)
 #define AUDIO_TROZO       2048
 
 static StreamBufferHandle_t s_audio_sb = NULL;
 static volatile bool s_audio_desborde = false;
+// Contadores de la sesion. Sirven para MEDIR si el regulador del servidor
+// esta bien ajustado, en vez de discutirlo de oidas:
+//   descartes > 0  -> el servidor manda demasiado rapido (subir COLCHON_S
+//                     no; BAJARLO) o el colchon es pequeno
+//   secos     > 0  -> lo contrario: llega tarde y el altavoz se queda sin
+//                     datos a mitad de una racha (chasquido)
+static volatile uint32_t s_n_descartes = 0;
+static volatile uint32_t s_n_secos = 0;
+static volatile uint32_t s_bytes_perdidos = 0;
+
+uint32_t voice_audio_descartes(void) { return s_n_descartes; }
+uint32_t voice_audio_secos(void)     { return s_n_secos; }
 // Lo pone aplica_estado() al recibir "idle": el servidor ya no manda mas
 // audio, asi que en cuanto se vacie el colchon hay que callar el DMA sin
 // esperar al timeout. Ver tarea_audio.
@@ -107,6 +136,14 @@ static void tarea_audio(void *arg)
         size_t n = xStreamBufferReceive(s_audio_sb, buf, sizeof(buf),
                                         pdMS_TO_TICKS(s_fin_audio ? 40 : 400));
         if (n) {
+            // Seco: quedaba menos de un trozo entero y el servidor sigue
+            // mandando (no ha dicho "idle"). Es el sintoma OPUESTO al
+            // descarte -- el audio llega tarde -- y hasta ahora era
+            // invisible: se oia como un chasquido y no habia forma de saber
+            // si venia de aqui o del DMA. Se cuenta para poder distinguirlos.
+            if (!s_fin_audio && n < sizeof(buf) &&
+                xStreamBufferBytesAvailable(s_audio_sb) == 0)
+                s_n_secos++;
             audio_play_pcm(buf, n);
         } else if (sonando) {
             // Fin de la racha: callar el DMA. Sin esto se queda repitiendo en
@@ -125,8 +162,11 @@ static void tarea_audio(void *arg)
 
         if (s_audio_desborde) {
             s_audio_desborde = false;
-            ESP_LOGW(TAG, "audio: se descarto un trozo (llega mas rapido de lo "
-                          "que el altavoz puede reproducir)");
+            ESP_LOGW(TAG, "audio DESCARTE #%lu (%lu bytes perdidos en total): "
+                          "el servidor manda mas rapido de lo que el altavoz "
+                          "reproduce -> bajar COLCHON_S en websocket_bridge.py",
+                     (unsigned long)s_n_descartes,
+                     (unsigned long)s_bytes_perdidos);
         }
     }
 }
@@ -430,9 +470,17 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
             // audio de vuelta. Solo se encola -- reproducir aqui bloquearia
             // la lectura del socket y provocaria los chasquidos.
             if (s_audio_sb && e->data_len > 0) {
+                // Timeout 0 a proposito: bloquear aqui congelaria la lectura
+                // del socket, que es justo el bug que provocaba los
+                // chasquidos. Con el regulador del servidor esto NO deberia
+                // descartar nunca; si lo hace, el contador lo delata.
                 size_t puesto = xStreamBufferSend(s_audio_sb, e->data_ptr,
                                                   e->data_len, 0);
-                if (puesto < (size_t)e->data_len) s_audio_desborde = true;
+                if (puesto < (size_t)e->data_len) {
+                    s_audio_desborde = true;
+                    s_n_descartes++;
+                    s_bytes_perdidos += (uint32_t)(e->data_len - puesto);
+                }
             }
         } else if (e->op_code == 0x01 && e->data_len > 2) {
             cJSON *j = cJSON_ParseWithLength(e->data_ptr, e->data_len);
@@ -616,21 +664,80 @@ void voice_reporta_estado(void)
 // Antes el medidor leia por su cuenta desde hud_render(), y ese segundo
 // lector le robaba muestras al audio que se manda al servidor. Con un solo
 // lector eso no puede volver a pasar.
+// ============================================================
+//  Pre-roll del microfono
+// ============================================================
+// El truco que usa Xiaozhi (WakeWordAudioCache) y que aqui hacia falta igual.
+//
+// El problema: cuando pulsas el boton y hablas, la primera silaba ya ha
+// salido de tu boca antes de que s_talking valga true. Entre el toque y el
+// primer envio hay el debounce del tactil, la vuelta del HUD y el turno de
+// esta tarea: facilmente 150-250 ms. El servidor recibia "...enciende la luz"
+// sin la "e" inicial, o directamente medio verbo, y Transcribe adivinaba.
+// Se veia como "el STT es malo" cuando en realidad no le llegaba la frase.
+//
+// La solucion no es escuchar antes: es NO TIRAR lo que ya se escucho. El
+// microfono se lee siempre (la barra VU lo necesita), asi que esas muestras
+// ya existen. Aqui se guardan en un anillo y, al empezar a hablar, se manda
+// primero ese pasado y luego se sigue en directo. Cuesta 8 kB de RAM.
+#define PREROLL_MS      300
+#define PREROLL_N       (BOARD_SAMPLE_RATE * PREROLL_MS / 1000)   // muestras
+
+// Puntero y no array estatico: asi puede ir a PSRAM. Son ~9.6 kB que no
+// tienen por que ocupar RAM interna -- este anillo no lo toca ningun DMA,
+// solo la tarea del microfono.
+static int16_t *s_pre = NULL;
+static size_t   s_pre_w = 0;      // siguiente posicion de escritura
+static bool     s_pre_lleno = false;
+
+static void preroll_guarda(const int16_t *m, size_t n)
+{
+    if (!s_pre) return;
+    for (size_t i = 0; i < n; i++) {
+        s_pre[s_pre_w] = m[i];
+        if (++s_pre_w >= PREROLL_N) { s_pre_w = 0; s_pre_lleno = true; }
+    }
+}
+
+// Vuelca el anillo en orden cronologico. Se llama UNA vez, en el flanco de
+// subida de s_talking.
+static void preroll_envia(void)
+{
+    if (!s_conn || !s_pre) return;
+    if (s_pre_lleno && s_pre_w < PREROLL_N)
+        esp_websocket_client_send_bin(s_ws, (const char *)(s_pre + s_pre_w),
+                                      (PREROLL_N - s_pre_w) * sizeof(int16_t),
+                                      portMAX_DELAY);
+    if (s_pre_w)
+        esp_websocket_client_send_bin(s_ws, (const char *)s_pre,
+                                      s_pre_w * sizeof(int16_t), portMAX_DELAY);
+    s_pre_w = 0; s_pre_lleno = false;   // ya se gasto: no reenviarlo
+}
+
 static void tarea_mic(void *arg)
 {
     static int16_t buf[512];
     int ciclos = 0;
+    bool hablaba = false;
     while (1) {
         size_t got = audio_mic_read(buf, sizeof(buf), 100);
+
         if (got && s_talking && s_conn) {
+            // Flanco de subida: primero el pasado, luego el directo.
+            if (!hablaba) { preroll_envia(); hablaba = true; }
             esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
+        } else {
+            hablaba = false;
+            // Mientras NO se habla, el anillo se sigue llenando: es
+            // justamente el audio que hara falta cuando se pulse el boton.
+            if (got) preroll_guarda(buf, got / sizeof(int16_t));
         }
         if (!got) vTaskDelay(pdMS_TO_TICKS(10));   // sin datos: no girar en vacio
 
         // Cada ~4 s se publica el estado de la placa. Se aprovecha esta tarea
         // en vez de crear otra. El contador va por lecturas, no por delays:
-        // 512 muestras a 24 kHz son ~21 ms, asi que ~190 vueltas son 4 s.
-        if (++ciclos >= 190) { ciclos = 0; voice_reporta_estado(); }
+        // 256 muestras a 16 kHz son ~16 ms, asi que ~250 vueltas son 4 s.
+        if (++ciclos >= 250) { ciclos = 0; voice_reporta_estado(); }
     }
 }
 
@@ -668,11 +775,44 @@ esp_err_t voice_init(const char *host, int port)
     // servidor empieza a mandar audio de inmediato, tienen que existir ya.
     // Trigger level 1: se lee en cuanto haya algo. El colchon de arranque lo
     // gestiona tarea_audio (ver alli por que no se usa el trigger level).
-    s_audio_sb = xStreamBufferCreate(AUDIO_BUF_BYTES, 1);
-    if (!s_audio_sb) {
-        ESP_LOGE(TAG, "sin memoria para el buffer de audio");
-        return ESP_ERR_NO_MEM;
+    // El colchon de audio se crea sobre memoria pedida a mano en vez de con
+    // xStreamBufferCreate() a secas: asi puede vivir en PSRAM. No es DMA (el
+    // i2s_channel_write copia de aqui a sus descriptores), asi que la PSRAM
+    // vale perfectamente y son ~19 kB menos de RAM interna.
+    //
+    // El +1 es de la API: FreeRTOS reserva un byte para distinguir "lleno" de
+    // "vacio" en el anillo.
+    {
+        static StaticStreamBuffer_t sb_ctrl;   // el descriptor, pequeno
+        uint8_t *almacen = heap_caps_malloc(AUDIO_BUF_BYTES + 1, MALLOC_CAP_SPIRAM);
+        if (!almacen)
+            almacen = heap_caps_malloc(AUDIO_BUF_BYTES + 1, MALLOC_CAP_DEFAULT);
+        if (!almacen) {
+            ESP_LOGE(TAG, "sin memoria para el colchon de audio");
+            return ESP_ERR_NO_MEM;
+        }
+        s_audio_sb = xStreamBufferCreateStatic(AUDIO_BUF_BYTES, 1,
+                                               almacen, &sb_ctrl);
+        if (!s_audio_sb) {
+            ESP_LOGE(TAG, "sin memoria para el buffer de audio");
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "colchon de audio: %d ms (%d bytes) en %s",
+                 AUDIO_MS_BUF, AUDIO_BUF_BYTES,
+                 esp_ptr_external_ram(almacen) ? "PSRAM" : "RAM interna");
     }
+
+    // Pre-roll del microfono. Si no hay memoria NO se aborta: el pre-roll es
+    // una mejora del STT, no un requisito para hablar. preroll_guarda() y
+    // preroll_envia() comprueban el puntero y se quedan quietas.
+    s_pre = heap_caps_malloc(PREROLL_N * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!s_pre)
+        s_pre = heap_caps_malloc(PREROLL_N * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    if (s_pre)
+        ESP_LOGI(TAG, "pre-roll: %d ms en %s", PREROLL_MS,
+                 esp_ptr_external_ram(s_pre) ? "PSRAM" : "RAM interna");
+    else
+        ESP_LOGW(TAG, "sin pre-roll: no hay memoria (el STT perdera la 1a silaba)");
     xTaskCreate(tarea_audio, "audio_ws", 3072, NULL, 6, NULL);
 
     esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, on_ws, NULL);

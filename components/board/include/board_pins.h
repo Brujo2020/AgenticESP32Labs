@@ -34,7 +34,29 @@
 #define BOARD_I2S_DIN       10      // microfono -> ESP32
 #define BOARD_I2S_DOUT      8       // ESP32 -> parlante
 #define BOARD_PA_EN         46      // habilita el amplificador
-#define BOARD_SAMPLE_RATE   24000
+// 16 kHz de punta a punta. NO es "menos calidad": es no resamplear NUNCA.
+//
+// Antes esto era 24000 y ahi estaba el timbre metalico de la voz. Polly con
+// OutputFormat=pcm SOLO entrega 8000 o 16000, asi que el servidor subia de
+// 16k a 24k con audioop.ratecv -- un interpolador lineal SIN filtro
+// anti-imagen. Al subir 16->24 aparecen replicas espectrales alrededor de
+// 8 kHz dentro de la banda audible: eso es el aspero que se oia, y no venia
+// de Polly (Lucia neuronal suena bien).
+//
+// A 16000 la cadena entera es nativa y no hay ninguna conversion:
+//   Polly pcm      -> 16000  nativo
+//   Transcribe STT -> 16000  es su tasa de trabajo
+//   Piper x_low    -> 16000  nativo
+// La banda util del habla muere en ~8 kHz, asi que 16 kHz la cubre entera:
+// subir a 24 kHz no anadia informacion, solo artefactos.
+//
+// De regalo: 33% menos bytes por WiFi -> menos jitter y menos cortes.
+//
+// Los registros del ES8311 (0x02-0x06) NO hay que tocarlos: estan fijados
+// para la relacion MCLK = 256 x fs, no para 24000 en absoluto. A 16 kHz el
+// I2S genera MCLK = 4.096 MHz, sigue siendo 256x, y los mismos divisores
+// (pre_div=1, pre_multi=1, adc_div=1, dac_div=1, bclk_div=4) valen igual.
+#define BOARD_SAMPLE_RATE   16000
 
 // ---- Otros ----
 #define BOARD_LED           48

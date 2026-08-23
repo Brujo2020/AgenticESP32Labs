@@ -18,6 +18,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "esp_timer.h"
 
 static const char *TAG = "audio";
 static i2c_master_bus_handle_t s_bus = NULL;
@@ -26,6 +27,11 @@ static i2s_chan_handle_t s_tx = NULL, s_rx = NULL;
 static bool s_ready = false;
 static int  s_level = 0;
 static int  s_vol = 55;
+
+// Definidas mas abajo, junto al resto de la logica del amplificador; se
+// declaran aqui porque audio_init() lanza la tarea antes de esa seccion.
+static void tarea_pa(void *arg);
+void audio_pa(bool on);
 
 static esp_err_t reg_w(uint8_t reg, uint8_t val)
 {
@@ -55,7 +61,13 @@ esp_err_t audio_init(void)
 
     gpio_config_t pa = { .pin_bit_mask = 1ULL << BOARD_PA_EN, .mode = GPIO_MODE_OUTPUT };
     gpio_config(&pa);
-    gpio_set_level(BOARD_PA_EN, 1);          // habilita el amplificador
+    // El amplificador arranca APAGADO. Antes se dejaba a 1 para siempre y el
+    // clase D amplificaba su propio ruido de fondo las 24 horas: ese siseo
+    // constante es lo que hace que un aparato suene "barato" aunque la voz
+    // este bien. Lo enciende audio_pa() justo antes de sonar y lo apaga el
+    // guardian tras PA_APAGADO_MS de silencio (mismo patron que el
+    // audio_power_timer_ de Xiaozhi).
+    gpio_set_level(BOARD_PA_EN, 0);
 
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.dma_desc_num = 6;
@@ -102,15 +114,58 @@ esp_err_t audio_init(void)
     reg_w(0x32, 0x8C);        // volumen ~55%
 
     s_ready = true;
-    ESP_LOGI(TAG, "ES8311 listo");
+    xTaskCreate(tarea_pa, "pa_off", 2048, NULL, 2, NULL);
+    ESP_LOGI(TAG, "ES8311 listo a %d Hz", BOARD_SAMPLE_RATE);
     return ESP_OK;
 }
 
 bool audio_ready(void) { return s_ready; }
 
+// ============================================================
+//  Amplificador bajo demanda
+// ============================================================
+// El PA se enciende al primer byte de audio y se apaga solo cuando lleva
+// PA_APAGADO_MS sin nada que sonar. Dos motivos, y el segundo importa mas:
+//
+//  1) El siseo del clase D desaparece cuando no hay nada que decir.
+//  2) El "pop" del encendido queda ANTES del audio, no encima: hay que dar
+//     unos ms al amplificador para estabilizarse, y por eso audio_pa(true)
+//     espera. Encender y escribir en la misma instruccion mete el chasquido
+//     justo sobre la primera silaba.
+#define PA_APAGADO_MS   3000
+
+static volatile int64_t s_pa_ultimo_us = 0;
+static volatile bool    s_pa_on = false;
+
+void audio_pa(bool on)
+{
+    if (!s_ready) return;
+    s_pa_ultimo_us = esp_timer_get_time();
+    if (on == s_pa_on) return;
+    gpio_set_level(BOARD_PA_EN, on ? 1 : 0);
+    s_pa_on = on;
+    if (on) vTaskDelay(pdMS_TO_TICKS(8));   // que se estabilice antes de sonar
+}
+
+bool audio_pa_encendido(void) { return s_pa_on; }
+
+// Corre en su propia tarea: apagar el PA desde la tarea de audio obligaria a
+// que esta se despertara sola para comprobarlo, y esta bloqueada esperando
+// datos de red la mayor parte del tiempo.
+static void tarea_pa(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (s_pa_on &&
+            (esp_timer_get_time() - s_pa_ultimo_us) > (int64_t)PA_APAGADO_MS * 1000)
+            audio_pa(false);
+    }
+}
+
 void audio_beep(int freq_hz, int ms)
 {
     if (!s_ready) return;
+    audio_pa(true);
     int16_t buf[256];
     size_t w;
     int total = BOARD_SAMPLE_RATE * ms / 1000;
@@ -178,6 +233,7 @@ int audio_mic_level(void)
 void audio_play_pcm(const void *pcm, size_t bytes)
 {
     if (!s_ready || !pcm || !bytes) return;
+    audio_pa(true);
     size_t w;
     i2s_channel_write(s_tx, pcm, bytes, &w, pdMS_TO_TICKS(2000));
 }

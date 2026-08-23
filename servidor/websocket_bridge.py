@@ -67,7 +67,15 @@ def normaliza(pcm: bytes) -> bytes:
     if not pcm:
         return pcm
     pico = audioop.max(pcm, 2)
+    # Log SIEMPRE, incluso cuando no se amplifica: sin esto no habia forma de
+    # saber si el STT "entiende mal" o si sencillamente no le esta llegando
+    # voz -- picos por debajo de ~200 en int16 (rango 0-32767) son silencio o
+    # ruido de fondo, no habla. Una alucinacion tipo "gracias por ver el
+    # video" con pico bajo confirma microfono/gate, no problema de STT.
+    log.info("nivel de audio del turno: pico=%d (rango 0-32767, ~200=silencio)", pico)
     if pico < 200:            # practicamente silencio: amplificar solo daria ruido
+        log.warning("audio del turno es practicamente silencio (pico=%d) -- "
+                     "el STT va a fallar o alucinar, esto NO es culpa del STT", pico)
         return pcm
     objetivo = int(32767 * 0.8)
     factor = min(objetivo / pico, 8.0)

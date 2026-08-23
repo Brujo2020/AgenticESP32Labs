@@ -25,18 +25,22 @@ static const char *TAG = "main";
 // casa y el servidor en la nube, asi que mDNS (_hud._tcp) nunca los va a
 // poner en contacto -- solo funciona dentro de la misma red local.
 //
-// IP ESTATICA (StaticIp-1), adjunta el 23/08/2026. Ya NO cambia al reiniciar
-// la instancia, que es lo que rompia la conexion cada dos por tres: el panel
-// decia "sin dispositivo" y no habia ni voz ni ajustes, sin que nada estuviera
-// roto en realidad (paso el 22/08: .142 -> .244).
+// DuckDNS en vez de la IP cruda (23/ago/2026): asistente-esp32.duckdns.org
+// apunta a la IP ESTATICA de Lightsail (15.229.88.144, StaticIp-1, adjunta
+// el 23/08/2026 -- ya NO cambia al reiniciar la instancia). Con el nombre,
+// si algun dia la IP estatica cambiara (recrear la instancia, por ejemplo),
+// solo hay que actualizar el registro en duckdns.org: el firmware no
+// necesitaria reflashearse. Requiere que el ESP32 resuelva DNS -- ya lo hace
+// (net_sync_time usa NTP por hostname), asi que no es una dependencia nueva.
 //
 // Region: sa-east-1 (Sao Paulo). El rango 15.229.x.x lo delata, y es el dato
 // que decide que .pem usar para entrar por SSH.
 //
 // AVISO DE FACTURACION: una IP estatica de Lightsail es gratis SOLO mientras
 // este adjunta a una instancia en marcha. Si algun dia se para la instancia y
-// se deja la IP reservada, empieza a costar.
-#define SERVIDOR_HOST  "15.229.88.144"
+// se deja la IP reservada, empieza a costar. El dominio en si (DuckDNS) es
+// gratis siempre.
+#define SERVIDOR_HOST  "asistente-esp32.duckdns.org"
 #define SERVIDOR_PORT  8765
 
 // El clima se refresca en su propia tarea: la peticion HTTP bloquea

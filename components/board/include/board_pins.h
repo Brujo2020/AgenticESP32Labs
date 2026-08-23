@@ -56,7 +56,21 @@
 // para la relacion MCLK = 256 x fs, no para 24000 en absoluto. A 16 kHz el
 // I2S genera MCLK = 4.096 MHz, sigue siendo 256x, y los mismos divisores
 // (pre_div=1, pre_multi=1, adc_div=1, dac_div=1, bclk_div=4) valen igual.
-#define BOARD_SAMPLE_RATE   16000
+//
+// ACTUALIZACION (23/ago/2026): grabaciones reales mostraron audio grave y
+// distorsionado a 16000 Hz. Se sospecho primero del reloj/MCLK (con audio
+// a ~31000 Hz real segun reinterpretaciones de oido) y se probo subir todo
+// a 32000 Hz -- no cambio nada, asi que el reloj no era la causa.
+//
+// Causa real, encontrada comparando contra xiaozhi-esp32
+// (main/audio/codecs/es8311_audio_codec.cc): el I2S estaba en modo MONO,
+// pero el ES8311 en este hardware usa AMBOS slots I2S (L y R) aunque el
+// audio sea mono. Pedir MONO hacia que el driver leyera/escribiera solo un
+// slot, perdiendo la mitad de los datos reales. Fix en audio.c: I2S en
+// STEREO con slot_mask=BOTH (igual que Xiaozhi), 16000 Hz directo, sin
+// ninguna conversion de tasa -- audio_mic_read() extrae un canal al leer,
+// audio_play_pcm()/audio_beep() duplican cada muestra en L/R al escribir.
+#define BOARD_SAMPLE_RATE      16000
 
 // ---- Otros ----
 #define BOARD_LED           48

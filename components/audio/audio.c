@@ -19,6 +19,7 @@
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "audio";
 static i2c_master_bus_handle_t s_bus = NULL;
@@ -74,10 +75,34 @@ esp_err_t audio_init(void)
     cc.dma_frame_num = 240;
     ESP_RETURN_ON_ERROR(i2s_new_channel(&cc, &s_tx, &s_rx), TAG, "i2s chan");
 
+    // CAUSA RAIZ REAL encontrada (23 ago 2026), comparando linea a linea
+    // contra el firmware de referencia xiaozhi-esp32
+    // (main/audio/codecs/es8311_audio_codec.cc, CreateDuplexChannels()):
+    // ellos configuran el I2S en STEREO con slot_mask=BOTH, no en MONO. El
+    // ES8311 en este hardware transmite/recibe en AMBOS slots I2S (L y R)
+    // aunque el audio real sea mono -- pedir I2S_SLOT_MODE_MONO hacia que
+    // el driver del ESP32 leyera solo uno de los dos slots, perdiendo la
+    // mitad de los datos reales y quedandose con un patron intercalado que
+    // sonaba grave/suavizado/con tono espurio. Ese era el bug de verdad, NO
+    // el reloj: el intento anterior de subir todo a 32kHz "por si era el
+    // MCLK" no cambio nada porque el problema nunca fue la velocidad del
+    // reloj, era que faltaba la mitad del audio.
+    //
+    // Vuelve a I2S_STD_CLK_DEFAULT_CONFIG(BOARD_SAMPLE_RATE) (16000 Hz
+    // directo, sin capa de conversion 32k<->16k en software: ya no hace
+    // falta) y a slot STEREO/BOTH, igual que Xiaozhi. audio_mic_read()
+    // vuelve a leer directo sin downsample -- ver mas abajo.
     i2s_std_config_t std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(BOARD_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                        I2S_SLOT_MODE_MONO),
+        .slot_cfg = {
+            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode = I2S_SLOT_MODE_STEREO,
+            .slot_mask = I2S_STD_SLOT_BOTH,
+            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .ws_pol = false,
+            .bit_shift = true,
+        },
         .gpio_cfg = {
             .mclk = BOARD_I2S_MCLK, .bclk = BOARD_I2S_BCLK, .ws = BOARD_I2S_WS,
             .dout = BOARD_I2S_DOUT, .din = BOARD_I2S_DIN,
@@ -90,15 +115,42 @@ esp_err_t audio_init(void)
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx), TAG, "rx on");
 
     // ---- arranque del codec ----
+    //
+    // HISTORIA DEL BUG (23 ago 2026) -- causa raiz real encontrada al
+    // final, comparando linea a linea contra xiaozhi-esp32:
+    //
+    // A 16000 Hz declarados, grabaciones reales mostraban audio grave y
+    // distorsionado. Se sospecho primero del reloj (MCLK no exacto) y se
+    // probo subir todo a 32000 Hz con conversion de tasa en software -- NO
+    // cambio nada, el problema persistio identico. Eso descarto el reloj.
+    //
+    // La causa real: el I2S estaba en I2S_SLOT_MODE_MONO, pero el ES8311 en
+    // este hardware transmite/recibe en AMBOS slots I2S (L y R) aunque el
+    // audio sea mono -- exactamente como lo configura xiaozhi-esp32
+    // (main/audio/codecs/es8311_audio_codec.cc, CreateDuplexChannels():
+    // slot_mode=STEREO, slot_mask=BOTH). Pedir MONO hacia que el driver
+    // leyera/escribiera solo uno de los dos slots, perdiendo la mitad de
+    // los datos reales -- de ahi el patron de audio "suavizado" con un tono
+    // espurio dominante y transcripciones sin ninguna relacion con lo dicho.
+    //
+    // Fix real: I2S en STEREO/BOTH (ver std.slot_cfg arriba), 16000 Hz
+    // directo (sin capa de conversion de tasa, nunca hizo falta). Cada
+    // muestra logica se duplica en L/R al escribir (audio_play_pcm,
+    // audio_beep) y se extrae de un canal al leer (audio_mic_read).
+    //
+    // Los registros de abajo son la fila oficial de Espressif
+    // (esp-bsp/components/es8311/es8311.c) para MCLK=4096000 Hz (=256 x
+    // 16000) con fs=16000: pre_div=1, pre_multi=0, adc_div=1, dac_div=1,
+    // bclk_div=4.
     reg_w(0x00, 0x1F); vTaskDelay(pdMS_TO_TICKS(20));
     reg_w(0x00, 0x00);
     reg_w(0x00, 0x80);        // power-on, modo esclavo
     reg_w(0x01, 0x3F);        // MCLK desde el pin MCLK, relojes activos
-    reg_w(0x02, 0x00);        // pre_div=1, pre_multi=1
-    reg_w(0x03, 0x10);        // fs_mode=0, adc_osr
+    reg_w(0x02, 0x00);        // pre_div=1, pre_multi=0 (fila oficial 4096000/16000)
+    reg_w(0x03, 0x10);        // fs_mode=0, adc_osr=0x10
     reg_w(0x04, 0x10);        // dac_osr
-    reg_w(0x05, 0x00);        // adc_div=1, dac_div=1
-    reg_w(0x06, 0x03);        // bclk_div=4
+    reg_w(0x05, 0x00);        // adc_div=1, dac_div=1 (igual en ambas filas)
+    reg_w(0x06, 0x03);        // bclk_div=4 (igual en ambas filas)
     reg_w(0x07, 0x00);
     reg_w(0x08, 0xFF);
     reg_w(0x09, 0x0C);        // I2S 16 bits entrada
@@ -157,7 +209,8 @@ esp_err_t audio_init(void)
 
     s_ready = true;
     xTaskCreate(tarea_pa, "pa_off", 2048, NULL, 2, NULL);
-    ESP_LOGI(TAG, "ES8311 listo a %d Hz", BOARD_SAMPLE_RATE);
+    ESP_LOGI(TAG, "ES8311 listo a %d Hz (I2S stereo/BOTH, mono real duplicado en L/R)",
+             BOARD_SAMPLE_RATE);
     return ESP_OK;
 }
 
@@ -208,7 +261,11 @@ void audio_beep(int freq_hz, int ms)
 {
     if (!s_ready) return;
     audio_pa(true);
-    int16_t buf[256];
+    // Stereo: cada muestra logica sale duplicada en L y R (buf[2*j]=L,
+    // buf[2*j+1]=R). El slot_mode ahora es STEREO/BOTH (ver audio_init(),
+    // mismo patron que xiaozhi-esp32) -- escribir solo un canal dejaria el
+    // otro con lo que hubiera antes en el buffer DMA.
+    int16_t buf[512];   // 256 muestras logicas x 2 canales
     size_t w;
     int total = BOARD_SAMPLE_RATE * ms / 1000;
     int fade  = BOARD_SAMPLE_RATE / 200;      // 5 ms de subida/bajada
@@ -219,7 +276,8 @@ void audio_beep(int freq_hz, int ms)
             if (n < fade)              env = (float)n / fade;
             else if (n > total - fade) env = (float)(total - n) / fade;
             if (env < 0) env = 0;
-            buf[j] = (int16_t)(2600 * env * sinf(2.0f * (float)M_PI * freq_hz * n / BOARD_SAMPLE_RATE));
+            int16_t s = (int16_t)(2600 * env * sinf(2.0f * (float)M_PI * freq_hz * n / BOARD_SAMPLE_RATE));
+            buf[2 * j] = s; buf[2 * j + 1] = s;
         }
         i2s_channel_write(s_tx, buf, sizeof(buf), &w, pdMS_TO_TICKS(300));
     }
@@ -230,8 +288,36 @@ void audio_beep(int freq_hz, int ms)
 size_t audio_mic_read(int16_t *dst, size_t bytes, int timeout_ms)
 {
     if (!s_ready) return 0;
-    size_t got = 0;
-    if (i2s_channel_read(s_rx, dst, bytes, &got, pdMS_TO_TICKS(timeout_ms)) != ESP_OK) return 0;
+    // El I2S ahora esta en STEREO/BOTH (ver audio_init()): el codec entrega
+    // pares intercalados L,R,L,R,... por cada muestra logica, aunque el
+    // audio real sea mono. Leer en MONO (como se hacia antes) descartaba de
+    // hecho la mitad de los datos reales, no "la otra mitad silenciosa" --
+    // de ahi la distorsion. Aqui se lee el doble de bytes (stereo) y se
+    // extrae un solo canal (L) para quedarse con las muestras mono reales,
+    // a BOARD_SAMPLE_RATE directo, sin ninguna conversion de tasa.
+    size_t muestras_pedidas = bytes / sizeof(int16_t);
+    size_t bytes_hw = muestras_pedidas * 2 * sizeof(int16_t);   // x2 por ser stereo
+    int16_t crudo[1024];   // 2048 bytes: cubre hasta 512 muestras logicas pedidas
+    if (bytes_hw > sizeof(crudo)) bytes_hw = sizeof(crudo);
+
+    size_t got_hw = 0;
+    if (i2s_channel_read(s_rx, crudo, bytes_hw, &got_hw, pdMS_TO_TICKS(timeout_ms)) != ESP_OK)
+        return 0;
+    if (!got_hw) return 0;
+
+    size_t n_hw = got_hw / sizeof(int16_t);   // total de valores L+R intercalados
+    size_t n_pares = n_hw / 2;                // pares completos L,R disponibles
+    size_t n_pedidas = muestras_pedidas < n_pares ? muestras_pedidas : n_pares;
+
+    // Extrae el canal L (indice par: 0, 2, 4, ...): el ES8311 en este
+    // hardware es mono real, asi que L y R deberian traer el mismo dato o
+    // uno de los dos ser el valido -- se confirma de oido con la primera
+    // prueba tras este cambio. Si R resultara ser el canal correcto en vez
+    // de L, es un cambio de un indice (crudo[2*i+1] en vez de crudo[2*i]).
+    for (size_t i = 0; i < n_pedidas; i++)
+        dst[i] = crudo[2 * i];
+    size_t got = n_pedidas * sizeof(int16_t);
+
     // El nivel se calcula aqui, sobre las muestras que YA se han leido. Ver
     // audio_mic_level() para por que esto importa tanto.
     if (got) audio_mide_nivel(dst, got);
@@ -277,7 +363,36 @@ void audio_play_pcm(const void *pcm, size_t bytes)
     if (!s_ready || !pcm || !bytes) return;
     audio_pa(true);
     size_t w;
-    i2s_channel_write(s_tx, pcm, bytes, &w, pdMS_TO_TICKS(2000));
+
+    // El I2S ahora esta en STEREO/BOTH (ver audio_init(), mismo patron que
+    // xiaozhi-esp32): cada muestra logica hay que escribirla duplicada en
+    // L y R, si no, uno de los dos canales del codec se queda con lo que
+    // hubiera antes en el buffer DMA -- ya no hace falta convertir tasa
+    // (16000 logico == 16000 real), solo duplicar a stereo.
+    //
+    // heap_caps_malloc en vez de la pila: estos bloques vienen de
+    // tarea_audio en voice.c con trozos de frase completos, pueden ser
+    // varios KB -- una tarea FreeRTOS no tiene margen de stack para eso.
+    size_t n_in = bytes / sizeof(int16_t);
+    if (n_in < 1) return;
+    size_t n_out = n_in * 2;   // x2 por duplicar a stereo, no por cambiar tasa
+    int16_t *stereo = heap_caps_malloc(n_out * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (!stereo) stereo = heap_caps_malloc(n_out * sizeof(int16_t), MALLOC_CAP_DEFAULT);
+    if (!stereo) {
+        // Sin memoria para duplicar a stereo: no deberia pasar nunca en la
+        // practica (PSRAM de sobra). Mejor no sonar que arriesgar un canal
+        // con basura -- se aborta en vez de escribir 'pcm' tal cual (eso
+        // dejaria solo medio buffer, mitad L real y mitad lo que hubiera).
+        ESP_LOGE(TAG, "sin memoria para duplicar audio a stereo, se descarta");
+        return;
+    }
+    const int16_t *in = (const int16_t *)pcm;
+    for (size_t i = 0; i < n_in; i++) {
+        stereo[2 * i] = in[i];
+        stereo[2 * i + 1] = in[i];
+    }
+    i2s_channel_write(s_tx, stereo, n_out * sizeof(int16_t), &w, pdMS_TO_TICKS(2000));
+    heap_caps_free(stereo);
 }
 
 // Deja los buffers DMA en silencio.

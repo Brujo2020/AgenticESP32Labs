@@ -329,16 +329,48 @@ class Ritmo:
                 await asyncio.sleep(adelanto - COLCHON_S)
 
 
-def ajustes_actuales() -> dict:
-    """Bloque 'ajustes' de config.yaml, releido si el panel lo cambio.
+import yaml as _yaml
+from pathlib import Path as _Path
 
-    El panel web corre en otro proceso y escribe el mismo fichero; sin
-    releer, un toggle del panel no se notaria hasta reiniciar el bridge.
+# BUG REAL (encontrado 23/ago/2026): esta funcion leia agente.config.data
+# ["ajustes"], es decir una seccion dentro de config.yaml. Pero el panel web
+# (panel_api.py, AJUSTES_PATH) escribe los toggles en un fichero DISTINTO,
+# servidor/ajustes.yaml -- nunca se cruzan. Confirmar tts_leer_respuestas:
+# true en ajustes.yaml no significaba nada para debe_hablar(): siempre
+# devolvia el default True de config.yaml (vacio ahi), asi que en teoria
+# deberia haber funcionado iaual -- pero el archivo real, revisado en el
+# servidor, tenia YAML corrupto (lineas pegadas tipo "cyanefectos: true" y
+# "trueorden: 5"), lo que puede tumbar el parseo silenciosamente segun donde
+# yaml.safe_load() decida fallar. Fix: leer directo el fichero que usa el
+# panel, con manejo de error explicito en vez de tragarselo.
+_AJUSTES_PATH = _Path(__file__).resolve().parent / "ajustes.yaml"
+_ajustes_mtime = 0.0
+_ajustes_cache = {}
+
+
+def ajustes_actuales() -> dict:
+    """Ajustes guardados por el panel web (servidor/ajustes.yaml).
+
+    Releido solo si el fichero cambio en disco (mismo patron que
+    Config.recarga_si_cambio). Si el YAML esta roto se loguea el error UNA
+    vez (no en bucle) y se devuelve el ultimo valor bueno conocido, para no
+    dejar el asistente mudo por un typo en el panel.
     """
-    if agente and agente.config:
-        agente.config.recarga_si_cambio()
-        return (agente.config.data or {}).get("ajustes") or {}
-    return {}
+    global _ajustes_mtime, _ajustes_cache
+    try:
+        m = _AJUSTES_PATH.stat().st_mtime
+    except OSError:
+        return _ajustes_cache
+    if m <= _ajustes_mtime:
+        return _ajustes_cache
+    try:
+        datos = _yaml.safe_load(_AJUSTES_PATH.read_text()) or {}
+        _ajustes_cache = datos
+        _ajustes_mtime = m
+    except Exception as e:
+        log.error("ajustes.yaml no se pudo leer (YAML invalido?): %s", e)
+        _ajustes_mtime = m   # no reintentar en bucle sobre el mismo fichero roto
+    return _ajustes_cache
 
 
 def debe_hablar() -> bool:

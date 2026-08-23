@@ -528,6 +528,18 @@ async def atiende(ws):
                     wav = pcm_a_wav(bytes(buffer))
                     buffer.clear()
 
+                    # DEBUG TEMPORAL: guarda una copia del WAV que de verdad
+                    # se manda al STT, para poder escucharlo y confirmar si
+                    # es voz limpia, ruido, o silencio con picos -- sin esto
+                    # solo se puede especular a partir del numero de pico.
+                    # Quitar este bloque una vez confirmado el problema real.
+                    try:
+                        import shutil
+                        shutil.copy(wav, "/home/ubuntu/ultimo_turno_debug.wav")
+                        log.info("copia de depuracion guardada en /home/ubuntu/ultimo_turno_debug.wav")
+                    except Exception as e:
+                        log.warning("no se pudo guardar la copia de depuracion: %s", e)
+
                     texto = await asyncio.to_thread(transcribe, wav)
                     try:
                         os.unlink(wav)

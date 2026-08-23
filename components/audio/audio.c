@@ -109,8 +109,50 @@ esp_err_t audio_init(void)
     reg_w(0x13, 0x10);        // salida al driver del parlante
     reg_w(0x1C, 0x6A);        // ADC: bypass EQ, cancela offset DC
     reg_w(0x37, 0x08);        // DAC: bypass EQ
-    reg_w(0x17, 0xC8);        // ganancia ADC
-    reg_w(0x14, 0x1A);        // microfono analogico, PGA alta
+    // Ganancia del microfono: estaba en el maximo posible (PGA 0xA = ~33dB,
+    // mas 0xC8 de ganancia digital ADC encima). Resultado medido en el
+    // servidor: audioop.max() del PCM daba 32768 -- fondo de escala TOTAL,
+    // es decir clipping, no voz limpia. Con la onda cortada en el propio
+    // ESP32 (antes de llegar a la red), el STT recibia una forma de onda
+    // rota y alucinaba frases sueltas ("gracias por ver el video", tipico
+    // de Whisper con entrada saturada/sin habla reconocible) -- se veia
+    // como "el reconocimiento de voz es malo" cuando el problema era este
+    // registro, puesto antes de tener manera de medir el nivel real.
+    //
+    // 0x00 = 0dB de ganancia digital ADC (neutro): la normalizacion de
+    // volumen ya la hace el servidor (normaliza() en websocket_bridge.py),
+    // que SI sabe subir el nivel si hace falta -- pero no puede arreglar
+    // clipping, solo amplificar lo que ya esta limpio.
+    // OJO -- dos intentos anteriores fallaron por tocar el registro
+    // equivocado. 0x14 NO es la ganancia del microfono: es el registro que
+    // HABILITA el microfono analogico (el propio driver oficial de
+    // Espressif, esp-bsp/components/es8311/es8311.c, lo deja fijo en 0x1A
+    // con el comentario "enable analog MIC and max PGA gain" -- ese "max
+    // PGA gain" del comentario es enganoso, 0x1A es simplemente EL VALOR DE
+    // FABRICA para habilitar la entrada, no un control ajustable). Tocar
+    // ese nibble bajo (probado con 0x04 y con 0x15) no bajo la ganancia:
+    // rompio el bit de habilitacion y silencio el mic entero (confirmado
+    // con el medidor de nivel en vivo del propio ESP32: 0% sostenido).
+    //
+    // La ganancia real del microfono vive en OTRO registro: 0x16
+    // (ES8311_ADC_REG16, "ADC gain scale up" segun
+    // es8311_microphone_gain_set() en el driver oficial). Ese registro no
+    // se tocaba en absoluto -- se quedaba en su valor de reset del chip,
+    // que resulto demasiado alto para este hardware (pico=32768, clipping
+    // total, confirmado por el log del servidor).
+    //
+    // Fix correcto: 0x14 vuelve a 0x1A (el valor de fabrica que SI habilita
+    // el mic, sin tocarlo mas) y 0x17 vuelve a como estaba (ganancia
+    // digital ADC de fabrica). El ajuste de nivel se hace en 0x16.
+    // es8311_mic_gain_t va de 0 (0dB) a 10 (+42dB) en el driver oficial, en
+    // pasos de a 3dB aprox. Se prueba con 0x03 (~9dB, bien conservador) para
+    // salir de la saturacion total sin pasarse al otro extremo. Verificar
+    // con "nivel de audio del turno: pico=" en el log del servidor: si
+    // sigue saturado (pico pegado a 32767) subir el offset de gama a 0x02,
+    // 0x01...; si queda flojo (pico < 3000) probar 0x04, 0x05...
+    reg_w(0x17, 0xC8);        // ganancia digital ADC: valor de fabrica (no es el problema)
+    reg_w(0x14, 0x1A);        // habilita microfono analogico: valor de fabrica, NO TOCAR
+    reg_w(0x16, 0x03);        // ganancia PGA real del mic (registro correcto): ~9dB
     reg_w(0x32, 0x8C);        // volumen ~55%
 
     s_ready = true;

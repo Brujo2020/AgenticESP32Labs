@@ -739,6 +739,7 @@ static void tarea_mic(void *arg)
     static int16_t buf[512];
     int ciclos = 0;
     bool hablaba = false;
+    int ciclos_nivel = 0;
     while (1) {
         size_t got = audio_mic_read(buf, sizeof(buf), 100);
 
@@ -746,6 +747,16 @@ static void tarea_mic(void *arg)
             // Flanco de subida: primero el pasado, luego el directo.
             if (!hablaba) { preroll_envia(); hablaba = true; }
             esp_websocket_client_send_bin(s_ws, (const char *)buf, got, portMAX_DELAY);
+            // Nivel real del microfono MIENTRAS se habla, medido en la
+            // propia placa, sin pasar por WiFi ni por el servidor. Sirve
+            // para separar "el mic no capta nada" de "el mic capta bien
+            // pero algo se pierde/corrompe en el camino hasta el STT".
+            // Cada ~10 lecturas (unos 160ms) para no inundar el log.
+            if (++ciclos_nivel >= 10) {
+                ciclos_nivel = 0;
+                ESP_LOGI(TAG, "nivel mic en vivo: %d%% (0=silencio, 100=al maximo)",
+                         audio_mic_level());
+            }
         } else {
             hablaba = false;
             // Mientras NO se habla, el anillo se sigue llenando: es

@@ -118,6 +118,16 @@ static void tarea_audio(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(10));
                 espera++;
             }
+            // FIX chasquido de arranque (24/ago/2026): el canal TX no tiene
+            // auto_clear (ver audio_silencio() en audio.c), asi que el
+            // anillo DMA puede seguir con lo que quedara de la racha
+            // anterior -- silencio real o no, no esta garantizado. Encender
+            // el PA sobre basura vieja es justo el "pop agudo" al inicio de
+            // cada respuesta. Se limpia el DMA ANTES de audio_pa(true)
+            // (que ocurre dentro del primer audio_play_pcm de esta racha):
+            // asi el amplificador se despierta siempre sobre silencio real,
+            // nunca sobre el remanente de la frase anterior.
+            audio_silencio();
             sonando = true;
         }
 

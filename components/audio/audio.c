@@ -237,9 +237,19 @@ void audio_pa(bool on)
     if (!s_ready) return;
     s_pa_ultimo_us = esp_timer_get_time();
     if (on == s_pa_on) return;
+    // FIX chasquido de cierre (24/ago/2026): apagar el GPIO del PA en seco
+    // corta la salida analogica mientras el capacitor de acople / la etapa
+    // de salida del ES8311 todavia tiene carga -- eso es el "pop" agudo al
+    // final. audio_silencio() ya se llama antes desde voice.c cuando
+    // termina la racha, pero por si el PA se apagara desde otro camino
+    // (guardian tarea_pa, beeps, etc.) se refuerza aqui: silencio real en
+    // el DMA justo antes de cortar el GPIO, nunca sobre la ultima muestra
+    // de voz a mitad de onda.
+    if (!on) audio_silencio();
     gpio_set_level(BOARD_PA_EN, on ? 1 : 0);
     s_pa_on = on;
     if (on) vTaskDelay(pdMS_TO_TICKS(8));   // que se estabilice antes de sonar
+    else    vTaskDelay(pdMS_TO_TICKS(15));  // deja que el silencio real llegue al altavoz antes de cortar la alimentacion
 }
 
 bool audio_pa_encendido(void) { return s_pa_on; }

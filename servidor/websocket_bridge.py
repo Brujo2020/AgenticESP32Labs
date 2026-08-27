@@ -251,6 +251,93 @@ async def envia_telemetria(ws):
         await asyncio.sleep(5)
 
 
+async def vigila_alertas(ws):
+    """Avisa SIN que nadie pregunte: lluvia proxima y noticias nuevas.
+
+    Es la diferencia entre un cacharro que contesta y uno que te avisa. Todo
+    lo demas del HUD es reactivo (tu preguntas, el responde) o pasivo (feeds
+    que se refrescan en pantalla y nadie mira). Esto interrumpe: beep, aviso
+    en pantalla y, si esta activado, lo dice en voz alta.
+
+    Se controla desde ajustes.yaml (bloque 'alertas') para poder apagarlo en
+    una reunion sin recompilar:
+
+        alertas:
+          activas: true
+          hablar: true
+          intervalo_min: 10
+
+    Nunca lanza: una alerta que tumba el puente de voz seria mucho peor que
+    una alerta perdida.
+    """
+    ultimo_titular = None
+    aviso_lluvia_dado = False
+    intervalo = 600
+
+    while True:
+        try:
+            aj = ajustes_actuales().get("alertas") or {}
+            if not aj.get("activas", True):
+                await asyncio.sleep(60)
+                continue
+            intervalo = max(60, int(aj.get("intervalo_min", 10)) * 60)
+
+            avisos = []
+
+            # --- lluvia en las proximas horas ---------------------------
+            # Open-Meteo sin API key, igual que el MCP de clima. Se mira la
+            # probabilidad por hora en vez del "llueve ahora": avisar cuando
+            # ya te estas mojando no sirve de nada.
+            try:
+                import httpx
+                url = ("https://api.open-meteo.com/v1/forecast"
+                       f"?latitude={ALERTA_LAT}&longitude={ALERTA_LON}"
+                       "&hourly=precipitation_probability&forecast_hours=4&timezone=auto")
+                async with httpx.AsyncClient(timeout=10) as c:
+                    d = (await c.get(url)).json()
+                probs = (d.get("hourly") or {}).get("precipitation_probability") or []
+                pico = max(probs) if probs else 0
+                if pico >= 60 and not aviso_lluvia_dado:
+                    horas = probs.index(pico) if pico in probs else 0
+                    avisos.append(f"Ojo, {pico} por ciento de lluvia en unas {horas or 1} horas.")
+                    aviso_lluvia_dado = True
+                elif pico < 40:
+                    aviso_lluvia_dado = False       # se rearma cuando escampa
+            except Exception as e:
+                log.debug("alerta lluvia: %s", e)
+
+            # --- titular nuevo -------------------------------------------
+            # Solo el primero: si cambia, hay noticia. Comparar la lista
+            # entera daria un aviso cada vez que se reordena el feed.
+            try:
+                ts = await titulares(1)
+                if ts and ultimo_titular is not None and ts[0] != ultimo_titular:
+                    avisos.append(f"Noticia nueva. {ts[0].capitalize()}.")
+                if ts:
+                    ultimo_titular = ts[0]
+            except Exception as e:
+                log.debug("alerta noticias: %s", e)
+
+            # --- entrega --------------------------------------------------
+            for texto in avisos:
+                log.info("ALERTA: %s", texto)
+                try:
+                    await CANAL.notifica(texto[:60], "warn", beep=True)
+                except Exception as e:
+                    log.warning("alerta: no se pudo notificar: %s", e)
+                if aj.get("hablar", True):
+                    try:
+                        audio = await asyncio.to_thread(sintetiza, texto)
+                        for i in range(0, len(audio), 2048):
+                            await CANAL.send(audio[i:i + 2048])
+                    except Exception as e:
+                        log.warning("alerta: no se pudo hablar: %s", e)
+
+        except Exception as e:
+            log.warning("vigila_alertas: %s", e)
+        await asyncio.sleep(intervalo)
+
+
 async def envia_raw(ws, dato):
     """Escribe en el socket serializando con el resto de productores.
 
@@ -502,6 +589,7 @@ async def atiende(ws):
     await envia(ws, "estado", "idle")
     tarea_news = asyncio.create_task(envia_noticias(ws))
     tarea_tele = asyncio.create_task(envia_telemetria(ws))
+    tarea_alerta = asyncio.create_task(vigila_alertas(ws))
 
     try:
         async for msg in ws:
@@ -656,6 +744,7 @@ async def atiende(ws):
             CANAL.desconecta()
         tarea_news.cancel()
         tarea_tele.cancel()
+        tarea_alerta.cancel()
 
 
 def ip_local() -> str:

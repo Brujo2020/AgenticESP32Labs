@@ -255,6 +255,13 @@ tools_to_enable:
   - dispositivo
   - vigia
   - consulta
+  # Memoria persistente entre conversaciones (npx, sin API key):
+  # el asistente recuerda lo que le contaste en sesiones anteriores.
+  - memoria
+  # Busqueda web real. Necesita BRAVE_API_KEY en el .env del servidor
+  # (gratis, 2000 consultas/mes en https://brave.com/search/api/).
+  # Sin la clave el MCP no arranca y se descarta solo, sin romper nada.
+  - busqueda
   # - blender      # requiere el addon BlenderMCP instalado en Blender
   # - unity        # requiere el paquete Unity MCP en el proyecto
   # - ficheros

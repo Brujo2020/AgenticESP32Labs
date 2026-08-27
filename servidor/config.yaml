@@ -16,12 +16,15 @@ proveedores:
   # contra el credito gratis de la cuenta, y Claude es mucho mas confiable
   # llamando herramientas. Groq/nvidia quedan de respaldo por si Bedrock
   # tuviera un problema puntual (o si un dia se agota el credito).
-  llm: [bedrock, groq, nvidia, mlx]
+  # NOTA: Transcribe/Polly (AWS STT/TTS) causaban un crash-loop no resuelto
+  # ('cancel scope' de anyio) y se sacaron de la cadena a proposito -- ver
+  # historial de commits. No reactivar sin investigar esa causa primero.
+  llm: [bedrock, groq]
   # Transcribe primero: mismo credito/cuenta AWS que Bedrock y Polly, y saca
   # a Groq de la duda mientras se confirma si el problema de reconocimiento
   # era el proveedor o el audio de origen. Groq queda de respaldo (gratis,
   # rapido) y mlx-whisper local al final (sin red, sin coste).
-  stt: [transcribe, groq, mlx-whisper]
+  stt: [groq]
   # POLLY PRIMERO: voz neuronal en espanol de verdad (Lucia, es-ES), en la
   # misma nube que ya factura Bedrock, sin depender de que el .onnx de Piper
   # este bien descargado en el servidor. Piper queda de respaldo local (sin
@@ -32,7 +35,7 @@ proveedores:
   #
   # OJO: 'macos' NUNCA sirve de respaldo real en este servidor -- usa el
   # comando "say", que solo existe en macOS, y el servidor corre Ubuntu.
-  tts: [polly, piper, groq, macos]
+  tts: [piper, groq, macos]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,

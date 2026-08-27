@@ -55,7 +55,7 @@ catalogo:
     groq:                     # GRATIS · https://console.groq.com
       backend: "openai-compatible"
       base_url: "https://api.groq.com/openai/v1"
-      model: "llama-3.3-70b-versatile"
+      model: "openai/gpt-oss-120b"
       api_key: "${GROQ_API_KEY}"
       description: "Groq — gratis, inferencia mas rapida, tool calling"
 

@@ -220,7 +220,7 @@ async def ritmo_vias() -> str:
 
 
 @mcp.tool()
-async def ritmo_desglosa(tarea: str, picante: int = 1) -> str:
+async def ritmo_desglosa(tarea: str, detail: int = 1) -> str:
     """Desglosa una tarea que da paralisis de solo mirarla, en pasos
     concretos y accionables (el 'Magic ToDo' de Goblin Tools, adaptado --
     ver docs/investigacion/estado-del-arte-tdah-2026-actualizacion.md §5.3).
@@ -229,11 +229,11 @@ async def ritmo_desglosa(tarea: str, picante: int = 1) -> str:
     "se me hace una bola X", o cuando un pendiente lleva dias sin tocarse
     (RF-16, vias frias) y parece que el tamaño es el problema, no el tiempo.
 
-    'picante' (0-2): 0 = pocos pasos grandes (mapa general), 1 = pasos
+    'detail' (0-2): 0 = pocos pasos grandes (mapa general), 1 = pasos
     medianos (default), 2 = microsteps para cuando ni el primer paso da
     ganas de empezar.
     """
-    return _fmt(await _llama("ritmo_desglosa", {"tarea": tarea, "picante": picante}))
+    return _fmt(await _llama("ritmo_desglosa", {"tarea": tarea, "detail": detail}))
 
 
 if __name__ == "__main__":

@@ -616,10 +616,10 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
       <div class="sub">Cuando algo da parálisis de solo mirarlo: lo parte en pasos concretos (RF-19).</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input id="desglosa-tarea" placeholder="ej: preparar la propuesta para NTT DATA" style="flex:1;min-width:200px">
-        <select id="desglosa-picante">
-          <option value="0">poco picante (pocos pasos)</option>
-          <option value="1" selected>picante normal</option>
-          <option value="2">muy picante (microsteps)</option>
+        <select id="desglosa-detail">
+          <option value="0">poco detail (pocos pasos)</option>
+          <option value="1" selected>detail normal</option>
+          <option value="2">mucho detail (microsteps)</option>
         </select>
         <button class="btn" onclick="desglosarTarea()">Desglosar</button>
       </div>
@@ -1518,12 +1518,12 @@ async function ritmoCierra(){
 
 async function desglosarTarea(){
   const tarea = document.getElementById("desglosa-tarea").value.trim();
-  const picante = parseInt(document.getElementById("desglosa-picante").value, 10);
+  const detail = parseInt(document.getElementById("desglosa-detail").value, 10);
   const el = document.getElementById("desglosa-resultado");
   if (!tarea) return;
   el.innerHTML = `<div class="sub">pensando…</div>`;
   try {
-    const v = await api("/api/ritmo/desglosa", {method:"POST", body: JSON.stringify({tarea, picante})});
+    const v = await api("/api/ritmo/desglosa", {method:"POST", body: JSON.stringify({tarea, detail})});
     el.innerHTML = `<ol style="padding-left:20px;line-height:1.7">`
       + v.pasos.map(p => `<li>${p}</li>`).join("")
       + `</ol><button class="btn chico" onclick="agregarDesgloseAlPlan()">+ agregar como bloque suelto</button>`;

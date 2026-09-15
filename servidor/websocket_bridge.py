@@ -893,21 +893,22 @@ def _aprende_correcciones_modo(bloques: list) -> None:
                 log.warning("preferencias_modo: no se pudo guardar correccion: %s", e)
 
 
-_PICANTE_DOC = {
+_DETAIL_DOC = {
     0: "3-5 pasos grandes, para quien solo necesita un mapa general",
     1: "6-10 pasos medianos, cada uno una accion concreta de unos minutos",
     2: "12-20 microsteps, cada uno tan pequeño que empezarlo no de miedo",
 }
 
 
-async def _desglosa_tarea(tarea: str, picante: int = 1) -> dict:
+async def _desglosa_tarea(tarea: str, detail: int = 1) -> dict:
     """RF-19 (docs/investigacion/estado-del-arte-tdah-2026-actualizacion.md
     §2.3 y §5.3): la version propia del 'Magic ToDo' de Goblin Tools --
     la funcion mas valorada de todo el panorama 2026 segun las tres fuentes
     leidas para esa investigacion, y la unica pieza que a Goblin Tools le
     falta (login, memoria, agenda) es exactamente lo que RITMO+pendientes.py
-    ya tienen. 'picante' (0-2) controla la granularidad, mismo concepto que
-    el slider "spiciness" del original.
+    ya tienen. 'detail' (0-2) controla la granularidad, mismo concepto que
+    el slider "spiciness" del original -- renombrado a 'detail' (15/sep,
+    pedido explicito de Mario: "picante" sonaba raro en el panel).
 
     No usa RITMO ni nucleo/ritmo.py -- es una utilidad de LLM aislada, sin
     estado, para no arriesgar nada del motor ya probado. Vive aqui (no en
@@ -916,12 +917,12 @@ async def _desglosa_tarea(tarea: str, picante: int = 1) -> dict:
     tarea = (tarea or "").strip()
     if not tarea:
         return {"error": "falta 'tarea'"}
-    picante = max(0, min(2, int(picante)))
+    detail = max(0, min(2, int(detail)))
     if not cadenas.get("llm") or not cadenas["llm"].miembros:
         return {"error": "sin proveedor de llm disponible ahora mismo"}
     prompt = (
         "Desglosa la siguiente tarea, que a alguien con TDAH le cuesta empezar, "
-        f"en {_PICANTE_DOC[picante]}. Cada paso debe ser una accion concreta que "
+        f"en {_DETAIL_DOC[detail]}. Cada paso debe ser una accion concreta que "
         "se pueda hacer de inmediato, en imperativo, sin explicaciones. "
         "Responde SOLO con un array JSON de strings, sin texto alrededor, "
         f"sin numerar (el orden ya lo da el array).\n\nTarea: {tarea}"
@@ -934,7 +935,7 @@ async def _desglosa_tarea(tarea: str, picante: int = 1) -> dict:
     pasos = _extrae_lista_json(respuesta)
     if not pasos:
         return {"error": "el llm no devolvio una lista utilizable", "crudo": respuesta[:200]}
-    return {"tarea": tarea, "picante": picante, "pasos": pasos[:20]}
+    return {"tarea": tarea, "detail": detail, "pasos": pasos[:20]}
 
 
 def _extrae_lista_json(texto: str) -> list[str]:
@@ -1238,7 +1239,7 @@ async def atiende_control(ws):
                     await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
                     continue
                 if fn == "ritmo_desglosa":
-                    v = await _desglosa_tarea(args.get("tarea", ""), args.get("picante", 1))
+                    v = await _desglosa_tarea(args.get("tarea", ""), args.get("detail", 1))
                     await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
                     continue
                 # "resumen_feeds": pedido explicito del usuario, historial

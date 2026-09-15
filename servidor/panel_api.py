@@ -719,7 +719,7 @@ async def ritmo_cierra():
 
 class DesglosaIn(BaseModel):
     tarea: str
-    picante: int = 1
+    detail: int = 1
 
 
 @app.post("/api/ritmo/desglosa", dependencies=router_dep)
@@ -728,7 +728,7 @@ async def ritmo_desglosa_panel(body: DesglosaIn):
     para cuando ver la tarea desglosada en pantalla es justo el empujón
     que hace falta (docs/investigacion/estado-del-arte-tdah-2026-
     actualizacion.md §2.3)."""
-    v = await _control_llama("ritmo_desglosa", {"tarea": body.tarea, "picante": body.picante},
+    v = await _control_llama("ritmo_desglosa", {"tarea": body.tarea, "detail": body.detail},
                               timeout=30)
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])

@@ -11,6 +11,14 @@ Protocolo (ws://0.0.0.0:8765):
       {"t":"estado","v":"listening|processing|speaking|idle|error"}
       {"t":"texto","v":"..."}     lo que se entendio / lo que responde
       binario            audio de respuesta, mismo formato PCM
+
+Ola 1 (brain-multidispositivo): puede haber mas de un dispositivo conectado
+a la vez (la bola blanca y el M5StickS3). Cada uno tiene su propio Canal
+(nucleo/canal.py) con su propio lock de escritura, sus propias vistas y su
+propia sesion de voz -- nunca se comparten. Los servicios periodicos
+(noticias, telemetria, alertas) son UNA tarea por proceso, no una por
+conexion: antes, con N dispositivos conectados, habia N pollers de RSS
+duplicados escribiendo directo al socket sin pasar por el lock del canal.
 """
 import asyncio, audioop, json, os, socket, subprocess, tempfile, wave, logging
 import websockets
@@ -19,7 +27,7 @@ from nucleo.entorno import carga_env
 carga_env()   # servidor/.env, si existe — ver panel.py. No pisa el entorno real.
 
 from nucleo import Agente, Config, MCPPool
-from nucleo.canal import CANAL
+from nucleo.canal import REGISTRO_DISPOSITIVOS as REGISTRO
 from nucleo.guardia import GUARDIA, Rechazo
 from proveedores import cadenas_desde_config
 from noticias import titulares
@@ -205,54 +213,117 @@ def _en_lineas(texto: str, ancho: int) -> list[str]:
     return lineas
 
 
-async def envia_noticias(ws):
-    """Refresca titulares al conectar y luego cada 15 minutos.
+# ============================================================
+#  Servicios periodicos: UNA tarea de proceso, repartida a todos los
+#  canales vivos -- no una tarea por conexion. Ver docstring del modulo.
+# ============================================================
+
+# Ultimo lote enviado de cada feed. Un dispositivo que se conecta a mitad de
+# ciclo recibe esto de inmediato (empuja_estado_actual) en vez de esperar
+# hasta 15 minutos (noticias) o 5 segundos (telemetria) para su primer dato.
+_cache_noticias: list[str] = []
+_cache_mac: list[str] = []
+_cache_creativo: list[str] = []
+
+
+async def envia_a_canal(canal, tipo, valor):
+    """Como envia(), pero contra un Canal concreto en vez de un ws suelto.
+
+    Pasa SIEMPRE por Canal.send(), que tiene el lock de ese dispositivo: es
+    lo que evita que esta tarea de difusion entrelace sus frames con los del
+    audio de voz que puede estar saliendo por el mismo socket en ese momento.
+    Si el dispositivo se desconecto entre que se listo y que le tocaba
+    escribir, se registra y se sigue: un dispositivo caido no debe tumbar la
+    difusion a los demas.
+    """
+    try:
+        await canal.send(json.dumps({"t": tipo, "v": valor}, ensure_ascii=False))
+    except Exception as e:
+        log.debug("no se pudo enviar '%s' a '%s': %s", tipo, canal.device_id, e)
+
+
+async def empuja_estado_actual(canal):
+    """Al conectar, un dispositivo recibe el ultimo lote de cada feed que
+    quiera, sin esperar al siguiente ciclo del difusor correspondiente."""
+    if _cache_noticias and pantalla_activa("noticias") and canal.quiere("noticias"):
+        await envia_a_canal(canal, "noticias_reset", "")
+        for t in _cache_noticias:
+            await envia_a_canal(canal, "noticia", t)
+    if _cache_mac and pantalla_activa("mac") and canal.quiere("telemetria"):
+        await envia_a_canal(canal, "mac_reset", "")
+        for l in _cache_mac:
+            await envia_a_canal(canal, "mac", l)
+    if _cache_creativo and pantalla_activa("creativo") and canal.quiere("telemetria"):
+        await envia_a_canal(canal, "creativo_reset", "")
+        for l in _cache_creativo:
+            await envia_a_canal(canal, "creativo", l)
+
+
+async def difunde_noticias():
+    """Refresca titulares al arrancar y luego cada 15 minutos, y los reparte
+    a todos los dispositivos vivos que los quieran.
 
     Si la pantalla de noticias esta apagada en el panel, ni se piden los RSS:
-    no tiene sentido gastar red y CPU en algo que el usuario no puede ver.
+    no tiene sentido gastar red y CPU en algo que ningun dispositivo puede
+    mostrar.
     """
+    global _cache_noticias
     while True:
         try:
-            if not pantalla_activa("noticias"):
-                await asyncio.sleep(60)
-                continue
-            ts = await titulares(5)
-            if ts:
-                await envia(ws, "noticias_reset", "")
-                for t in ts:
-                    await envia(ws, "noticia", t)
-                log.info("enviados %d titulares", len(ts))
+            if pantalla_activa("noticias"):
+                ts = await titulares(5)
+                if ts:
+                    _cache_noticias = ts
+                    destinos = [c for c in REGISTRO.vivos() if c.quiere("noticias")]
+                    for c in destinos:
+                        await envia_a_canal(c, "noticias_reset", "")
+                        for t in ts:
+                            await envia_a_canal(c, "noticia", t)
+                    if destinos:
+                        log.info("enviados %d titulares a %d dispositivo(s)",
+                                 len(ts), len(destinos))
         except Exception as e:
             log.warning("noticias: %s", e)
         await asyncio.sleep(15 * 60)
 
 
-async def envia_telemetria(ws):
-    """Estado del Mac y de las apps creativas, cada 5 s.
+async def difunde_telemetria():
+    """Estado del Mac y de las apps creativas, cada 5 s, a todos los
+    dispositivos vivos que los quieran.
 
     Cada feed se salta si su pantalla esta apagada en el panel: son consultas
     al sistema cada 5 segundos, no vale la pena hacerlas a ciegas.
     """
+    global _cache_mac, _cache_creativo
     while True:
         try:
             if pantalla_activa("mac"):
                 mac = await asyncio.to_thread(lineas_mac)
-                await envia(ws, "mac_reset", "")
-                for l in mac:
-                    await envia(ws, "mac", l)
+                _cache_mac = mac
+                for c in REGISTRO.vivos():
+                    if not c.quiere("telemetria"):
+                        continue
+                    await envia_a_canal(c, "mac_reset", "")
+                    for l in mac:
+                        await envia_a_canal(c, "mac", l)
 
             if pantalla_activa("creativo"):
                 cre = await asyncio.to_thread(lineas_creativo)
-                await envia(ws, "creativo_reset", "")
-                for l in cre:
-                    await envia(ws, "creativo", l)
+                _cache_creativo = cre
+                for c in REGISTRO.vivos():
+                    if not c.quiere("telemetria"):
+                        continue
+                    await envia_a_canal(c, "creativo_reset", "")
+                    for l in cre:
+                        await envia_a_canal(c, "creativo", l)
         except Exception as e:
             log.warning("telemetria: %s", e)
         await asyncio.sleep(5)
 
 
-async def vigila_alertas(ws):
-    """Avisa SIN que nadie pregunte: lluvia proxima y noticias nuevas.
+async def vigila_alertas():
+    """Avisa SIN que nadie pregunte: lluvia proxima y noticias nuevas, en
+    TODOS los dispositivos vivos que quieran alertas.
 
     Es la diferencia entre un cacharro que contesta y uno que te avisa. Todo
     lo demas del HUD es reactivo (tu preguntas, el responde) o pasivo (feeds
@@ -318,20 +389,23 @@ async def vigila_alertas(ws):
             except Exception as e:
                 log.debug("alerta noticias: %s", e)
 
-            # --- entrega --------------------------------------------------
+            # --- entrega: a cada dispositivo vivo que quiera alertas ------
+            destinos = [c for c in REGISTRO.vivos() if c.quiere("alertas")]
             for texto in avisos:
                 log.info("ALERTA: %s", texto)
-                try:
-                    await CANAL.notifica(texto[:60], "warn", beep=True)
-                except Exception as e:
-                    log.warning("alerta: no se pudo notificar: %s", e)
-                if aj.get("hablar", True):
+                for c in destinos:
                     try:
-                        audio = await asyncio.to_thread(sintetiza, texto)
-                        for i in range(0, len(audio), 2048):
-                            await CANAL.send(audio[i:i + 2048])
+                        await c.notifica(texto[:60], "warn", beep=True)
                     except Exception as e:
-                        log.warning("alerta: no se pudo hablar: %s", e)
+                        log.warning("alerta: no se pudo notificar a '%s': %s",
+                                    c.device_id, e)
+                    if aj.get("hablar", True):
+                        try:
+                            audio = await asyncio.to_thread(sintetiza, texto)
+                            await Ritmo().envia(c, audio)
+                        except Exception as e:
+                            log.warning("alerta: no se pudo hablar en '%s': %s",
+                                        c.device_id, e)
 
         except Exception as e:
             log.warning("vigila_alertas: %s", e)
@@ -339,14 +413,19 @@ async def vigila_alertas(ws):
 
 
 async def envia_raw(ws, dato):
-    """Escribe en el socket serializando con el resto de productores.
+    """Escribe en el socket serializando con el resto de productores de ESE
+    dispositivo.
 
-    Si el destino es el ESP32, se pasa por CANAL.send(), que tiene el lock.
-    Escribir directo aqui es lo que corrompia el stream cuando la telemetria
-    caia en mitad del envio del audio -- ver el comentario en Canal.send().
+    Resuelve el Canal dueño de `ws` en el registro y pasa por su
+    Canal.send() (con SU lock). Si `ws` no es ningun dispositivo registrado
+    -- el caso del canal de control, que tiene un unico productor -- escribe
+    directo. Escribir directo al socket de un dispositivo es lo que
+    corrompia el stream cuando la telemetria caia en mitad del envio del
+    audio -- ver el comentario en Canal.send().
     """
-    if ws is CANAL.ws:
-        await CANAL.send(dato)
+    canal = REGISTRO.por_socket(ws)
+    if canal is not None:
+        await canal.send(dato)
     else:
         await ws.send(dato)      # canal de control: un solo productor
 
@@ -385,31 +464,36 @@ async def envia(ws, tipo, valor):
 # Xiaozhi no necesita nada de esto porque manda Opus: la misma frase de 3 s
 # son 6 kB y cabe entera en cualquier colchon. La compresion ES su control de
 # flujo. Mientras aqui se mande PCM, este regulador hace ese papel.
+#
+# Ola 1: el regulador recibe el CANAL, no un ws suelto -- toda escritura pasa
+# por Canal.send() y su lock. Un Ritmo vive mas alla de una sola frase a
+# proposito (ver la clase): si se reiniciara en cada una, el colchon
+# acumulado se perderia y entre frase y frase habria un hueco audible justo
+# cuando MENOS sobra tiempo.
 TROZO_AUDIO = 2048                       # 1024 muestras = 64 ms a 16 kHz
 COLCHON_S   = 0.40                       # adelanto maximo permitido
 BYTES_POR_S = SAMPLE_RATE * 2            # 16-bit mono
 
 
 class Ritmo:
-    """Regulador de una respuesta completa (todas sus frases).
-
-    Vive mas alla de una sola frase a proposito: si se reiniciara en cada una,
-    el colchon acumulado se perderia y entre frase y frase habria un hueco
-    audible justo cuando MENOS sobra tiempo (el TTS de la siguiente ya viene
-    con su propia latencia).
-    """
+    """Regulador de una respuesta completa (todas sus frases), para UN
+    canal. Con dos dispositivos hablando a la vez, cada uno usa su propio
+    Ritmo: un dispositivo lento no arrastra al otro (ver voz-sticks3, R5.4)."""
 
     def __init__(self):
         self._t0 = None
         self._audio_s = 0.0
 
-    async def envia(self, ws, audio: bytes):
+    async def envia(self, canal, audio: bytes):
         loop = asyncio.get_running_loop()
         if self._t0 is None:
             self._t0 = loop.time()
         for k in range(0, len(audio), TROZO_AUDIO):
             trozo = audio[k:k + TROZO_AUDIO]
-            await envia_raw(ws, trozo)
+            try:
+                await canal.send(trozo)
+            except RuntimeError:
+                return   # el dispositivo se desconecto a mitad de la respuesta
             self._audio_s += len(trozo) / BYTES_POR_S
             adelanto = self._audio_s - (loop.time() - self._t0)
             if adelanto > COLCHON_S:
@@ -481,9 +565,11 @@ def pantalla_activa(id_pantalla: str) -> bool:
 async def atiende_control(ws):
     """Cliente de rol 'control': el MCP 'dispositivo'.
 
-    Traduce {"t":"cmd","fn":...} a llamadas sobre CANAL y devuelve {"t":"res"}.
-    Separado de atiende() porque un cliente de control no manda audio ni
-    necesita los feeds periodicos.
+    Traduce {"t":"cmd","fn":...} a llamadas sobre un Canal del registro
+    (seleccionado por args.device_id) y devuelve {"t":"res"}. Separado de
+    atiende() porque un cliente de control no manda audio ni necesita los
+    feeds periodicos, y porque nunca se registra en REGISTRO: es el caso que
+    envia_raw() distingue para escribir sin pasar por un Canal.
     """
     log.info("cliente de control conectado desde %s", ws.remote_address)
     # Un cliente de control recibe capacidades acotadas y caducas. Por defecto
@@ -498,35 +584,40 @@ async def atiende_control(ws):
             if d.get("t") != "cmd":
                 continue
             rid, fn, args = d.get("rid"), d.get("fn"), d.get("args") or {}
+            target_canal = REGISTRO.obtener(args.get("device_id"))
             try:
-                if not CANAL.vivo and fn != "estado":
-                    v = {"error": "no hay ESP32 conectado al puente"}
+                if fn == "estado_todos":
+                    v = REGISTRO.snapshot_todos()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if not target_canal.vivo and fn != "estado":
+                    v = {"error": f"no hay ESP32 conectado al puente (dispositivo: {target_canal.device_id})"}
                     await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
                     continue
 
                 # Frontera de confianza: valida, acota y sanea ANTES de que
                 # nada salga hacia el dispositivo. Lo que devuelve la guardia
                 # es lo unico que se usa; los args originales se descartan.
-                args = GUARDIA.revisa(sujeto, fn, args, CANAL.limites["ancho"])
+                args = GUARDIA.revisa(sujeto, fn, args, target_canal.limites["ancho"])
 
                 if args.get("__dry_run__"):
                     v = {"ok": True, "dry_run": True, "validado": args}
                 elif fn == "pregunta":
-                    v = await CANAL.pregunta(args["txt"], args["opciones"],
+                    v = await target_canal.pregunta(args["txt"], args["opciones"],
                                              args["timeout"])
                 elif fn == "pregunta_async":
-                    v = await CANAL.pregunta_async(args["txt"], args["opciones"],
+                    v = await target_canal.pregunta_async(args["txt"], args["opciones"],
                                                    args["timeout"])
                 elif fn == "consulta":
-                    v = CANAL.consulta(args["qid"])
+                    v = target_canal.consulta(args["qid"])
                 elif fn == "mostrar":
-                    v = await CANAL.mostrar(args["id"], args["titulo"],
+                    v = await target_canal.mostrar(args["id"], args["titulo"],
                                             args["filas"], args["acento"],
                                             args["orden"], args["ttl"])
                 elif fn == "borrar":
-                    v = await CANAL.borrar(args["id"])
+                    v = await target_canal.borrar(args["id"])
                 elif fn == "notifica":
-                    v = await CANAL.notifica(args["txt"], args["nivel"],
+                    v = await target_canal.notifica(args["txt"], args["nivel"],
                                              args["beep"])
                 elif fn == "hablar":
                     texto = args["texto"]
@@ -534,22 +625,22 @@ async def atiende_control(ws):
                     # Mismo regulador que la respuesta de voz: este camino
                     # (una herramienta MCP pidiendo hablar) tenia el mismo
                     # volcado sin ritmo y por tanto los mismos cortes.
-                    await Ritmo().envia(CANAL.ws, audio)
-                    await envia(CANAL.ws, "texto", texto[:40].upper())
+                    await Ritmo().envia(target_canal, audio)
+                    await envia_a_canal(target_canal, "texto", texto[:40].upper())
                     v = f"Dicho en voz alta: {texto}"
                 elif fn == "estado":
-                    v = CANAL.snapshot()
+                    v = target_canal.snapshot()
                 elif fn == "configurar":
-                    v = await CANAL.configurar(args.get("brillo"), args.get("volumen"),
+                    v = await target_canal.configurar(args.get("brillo"), args.get("volumen"),
                                                args.get("tema_hud"), args.get("efectos"))
                 elif fn == "pantallas":
-                    v = await CANAL.pantallas(args.get("activas"), args.get("orden"))
+                    v = await target_canal.pantallas(args.get("activas"), args.get("orden"))
                 elif fn == "wifi":
-                    v = await CANAL.wifi(args.get("accion", "guardar"),
+                    v = await target_canal.wifi(args.get("accion", "guardar"),
                                          args.get("ssid", ""),
                                          args.get("password", ""))
                 elif fn == "reiniciar":
-                    v = await CANAL.reiniciar()
+                    v = await target_canal.reiniciar()
                 else:
                     v = {"error": f"comando desconocido '{fn}'"}
             except Rechazo as e:
@@ -569,9 +660,18 @@ async def atiende_control(ws):
 
 
 async def atiende(ws):
-    # El primer mensaje decide el rol: un cliente de control no es un ESP32.
-    # El firmware v1 no saluda, asi que se agota el plazo y se asume dispositivo.
-    # Dos segundos de espera solo en la conexion inicial, no por mensaje.
+    """Atiende una conexion de DISPOSITIVO (no de control).
+
+    Sin variable global: `canal_disp` se resuelve una vez al principio y es
+    la unica referencia que usa toda la funcion. Es la garantia de que el
+    audio, el texto y el estado de ESTA conexion van siempre al Canal de
+    ESTE dispositivo, nunca al de otro.
+    """
+    from nucleo.canal import DEVICE_ID_POR_DEFECTO
+    dev_id = DEVICE_ID_POR_DEFECTO
+    dev_type = "bola"
+    d_saludo = None
+
     try:
         primero = await asyncio.wait_for(ws.recv(), timeout=2.0)
         if isinstance(primero, str):
@@ -579,17 +679,30 @@ async def atiende(ws):
             if d.get("t") == "hola" and d.get("rol") == "control":
                 return await atiende_control(ws)
             if d.get("t") == "hola":
-                CANAL.saluda(d)
+                d_saludo = d
+                # Ola 1: solo identidad explicita (device_id/id). Nada de
+                # adivinar el tipo de placa por el string de firmware -- esa
+                # rama por tipo es justo lo que la ley 5 (un firmware, dos
+                # placas via limites/geometria) prohibe. La identidad y la
+                # geometria explicitas llegan en la ola 2 (protocolo v2.1).
+                dev_id = d.get("device_id") or d.get("id") or dev_id
+                dev_type = d.get("device_type") or dev_type
     except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed):
-        primero = None       # firmware v1: no saluda, se asume dispositivo
+        primero = None       # firmware v1: no saluda, se asume la bola
 
-    log.info("ESP32 conectado desde %s", ws.remote_address)
-    CANAL.conecta(ws)
+    canal_disp = REGISTRO.obtener_o_crear(dev_id, dev_type)
+    if d_saludo:
+        canal_disp.saluda(d_saludo)
+
+    log.info("ESP32 conectado ('%s', tipo=%s) desde %s",
+             canal_disp.device_id, canal_disp.device_type, ws.remote_address)
+    canal_disp.conecta(ws)
     buffer = bytearray()
     await envia(ws, "estado", "idle")
-    tarea_news = asyncio.create_task(envia_noticias(ws))
-    tarea_tele = asyncio.create_task(envia_telemetria(ws))
-    tarea_alerta = asyncio.create_task(vigila_alertas(ws))
+    # Empuja el ultimo lote de cada feed que este dispositivo quiera: no
+    # tiene que esperar al proximo ciclo de difunde_noticias/telemetria
+    # (hasta 15 min) para ver algo en pantalla.
+    await empuja_estado_actual(canal_disp)
 
     try:
         async for msg in ws:
@@ -600,10 +713,6 @@ async def atiende(ws):
             try:
                 data = json.loads(msg)
             except json.JSONDecodeError:
-                # Un mensaje mal formado (truncado, cortado a mitad de un
-                # frame, un firmware con un bug como el de voice_talk_stop
-                # mandando un JSON incompleto) no puede tirar toda la
-                # conexion: se descarta ese mensaje y se sigue escuchando.
                 log.warning("mensaje no-JSON del ESP32, se descarta: %r", msg[:80])
                 continue
             if data.get("t") == "ping":
@@ -611,22 +720,23 @@ async def atiende(ws):
 
             # Respuesta a un hud_preguntar: desbloquea al agente que espera
             if data.get("t") == "respuesta":
-                CANAL.resuelve(data.get("qid", ""), data.get("opcion", -1))
+                canal_disp.resuelve(data.get("qid", ""), data.get("opcion", -1))
                 continue
 
             # Estado real de la placa: brillo, volumen, tema, bateria, heap...
             # Lo manda el firmware al conectar y cada pocos segundos. Es lo que
             # permite que el panel muestre lo que el aparato TIENE, y no solo
-            # lo ultimo que el panel le mando -- si el usuario cambia el brillo
-            # en la pantalla de AJUSTES, el panel se entera igual.
+            # lo ultimo que el panel le mando -- si el usuario cambia el
+            # brillo en la pantalla de AJUSTES, el panel se entera igual.
+            # Se actualiza el estado de ESTE canal, nunca el de otro.
             if data.get("t") == "estado_disp":
-                CANAL.estado.update({k: v for k, v in data.items() if k != "t"})
+                canal_disp.estado.update({k: v for k, v in data.items() if k != "t"})
                 continue
 
             # Una vista interactiva: el usuario toco una fila
             if data.get("t") == "evento":
-                log.info("evento en vista '%s': fila %s",
-                         data.get("id"), data.get("fila"))
+                log.info("evento en vista '%s': fila %s (dispositivo: %s)",
+                         data.get("id"), data.get("fila"), canal_disp.device_id)
                 continue
 
             if data.get("t") == "fin":
@@ -704,7 +814,8 @@ async def atiende(ws):
                         frases = _en_frases(respuesta)
                         siguiente = asyncio.create_task(
                             asyncio.to_thread(sintetiza, frases[0]))
-                        # Un unico Ritmo para toda la respuesta: ver su clase.
+                        # Un unico Ritmo para toda la respuesta, ligado a ESTE
+                        # canal: ver la clase Ritmo.
                         ritmo = Ritmo()
                         for i, _ in enumerate(frases):
                             audio = await siguiente
@@ -713,7 +824,7 @@ async def atiende(ws):
                             if i + 1 < len(frases):
                                 siguiente = asyncio.create_task(
                                     asyncio.to_thread(sintetiza, frases[i + 1]))
-                            await ritmo.envia(ws, audio)
+                            await ritmo.envia(canal_disp, audio)
                     await envia(ws, "estado", "idle")
 
                 except websockets.ConnectionClosed:
@@ -736,15 +847,13 @@ async def atiende(ws):
         # reconecta solo a los 2 s.
         log.exception("error inesperado atendiendo al ESP32: %s", e)
     finally:
-        # Solo se suelta el CANAL si sigue siendo NUESTRA conexion. Si la placa
-        # se reconecto mientras esta corrutina agonizaba, el CANAL ya apunta a
-        # la sesion nueva y borrarlo aqui la dejaria muerta: el panel diria
-        # "SIN DISPOSITIVO" con el aparato perfectamente conectado.
-        if CANAL.ws is ws:
-            CANAL.desconecta()
-        tarea_news.cancel()
-        tarea_tele.cancel()
-        tarea_alerta.cancel()
+        # Solo se suelta el canal si sigue siendo NUESTRA conexion. Si la
+        # placa se reconecto mientras esta corrutina agonizaba, el canal ya
+        # apunta a la sesion nueva y borrarlo aqui la dejaria muerta: el
+        # panel diria "SIN DISPOSITIVO" con el aparato perfectamente
+        # conectado. (Regresion cubierta por test_multidispositivo.py.)
+        if canal_disp.ws is ws:
+            canal_disp.desconecta()
 
 
 def ip_local() -> str:
@@ -786,11 +895,18 @@ async def main():
     anuncia_mdns(ip)
     log.info("IP de este equipo: %s", ip)
     log.info("escuchando en ws://%s:%d", HOST, PORT)
+
+    # Servicios periodicos: una tarea de proceso cada uno, no una por
+    # conexion. Se reparten solos a REGISTRO.vivos() en cada ciclo.
+    asyncio.create_task(difunde_noticias())
+    asyncio.create_task(difunde_telemetria())
+    asyncio.create_task(vigila_alertas())
+
     # ping_interval/ping_timeout: el servidor tambien vigila el enlace. Sin
     # esto, un ESP32 que desaparece de malas maneras (se va el WiFi, se corta
-    # la luz) deja aqui una conexion abierta para siempre: CANAL sigue
-    # creyendo que hay dispositivo, el panel intenta aplicar ajustes contra un
-    # socket muerto, y cuando la placa vuelve de verdad hay dos sesiones.
+    # la luz) deja aqui una conexion abierta para siempre: su Canal sigue
+    # creyendo que hay dispositivo, el panel intenta aplicar ajustes contra
+    # un socket muerto, y cuando la placa vuelve de verdad hay dos sesiones.
     # Con esto el servidor detecta el silencio en ~40 s y limpia.
     async with websockets.serve(atiende, HOST, PORT, max_size=None,
                                 ping_interval=20, ping_timeout=20,

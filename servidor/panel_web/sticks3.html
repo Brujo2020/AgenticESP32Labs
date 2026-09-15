@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M5StickS3 — HUD & Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg1: #060913; --bg2: #0a1128; --bg3: #02040a;
+  --glass: rgba(16, 30, 66, 0.45);
+  --glass-border: rgba(94, 230, 201, 0.25);
+  --glass-hi: rgba(94, 230, 201, 0.45);
+  --text: #e8f4ff; --text-muted: #8fb4d9;
+  --primary: #5ee6c9; --accent: #ff7b54; --accent2: #7aa2ff;
+  --ok: #34e5a0; --warn: #ffc266; --err: #ff6b81;
+  --font-hud: 'Orbitron', monospace;
+  --font-mono: 'Share Tech Mono', monospace;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --glow: 0 0 25px rgba(94, 230, 201, 0.35);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; color: var(--text);
+  font-family: var(--font-sans);
+  background: radial-gradient(circle at 15% 15%, rgba(94, 230, 201, 0.12), transparent 45%),
+              radial-gradient(circle at 85% 80%, rgba(122, 162, 255, 0.12), transparent 45%),
+              linear-gradient(170deg, var(--bg1), var(--bg2) 55%, var(--bg3));
+  background-attachment: fixed;
+  display: flex; flex-direction: column;
+}
+header {
+  padding: 1.2rem 2rem;
+  background: rgba(6, 12, 28, 0.65);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.brand {
+  font-family: var(--font-hud);
+  font-weight: 900;
+  font-size: 1.3rem;
+  letter-spacing: 2px;
+  color: var(--primary);
+  display: flex; align-items: center; gap: 0.8rem;
+  text-shadow: 0 0 12px rgba(94, 230, 201, 0.5);
+}
+.badge-dev {
+  font-size: 0.65rem; background: rgba(94, 230, 201, 0.15);
+  border: 1px solid var(--primary); padding: 2px 8px; border-radius: 4px;
+  color: var(--primary); font-family: var(--font-mono);
+}
+.status-pill {
+  font-family: var(--font-mono); font-size: 0.85rem;
+  padding: 6px 14px; border-radius: 99px;
+  background: rgba(255, 107, 129, 0.15); border: 1px solid var(--err); color: var(--err);
+  display: flex; align-items: center; gap: 6px;
+}
+.status-pill.online {
+  background: rgba(52, 229, 160, 0.15); border-color: var(--ok); color: var(--ok);
+}
+.status-pill .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+main {
+  flex: 1; max-width: 1200px; width: 100%; margin: 0 auto;
+  padding: 2rem; display: grid; grid-template-columns: 340px 1fr; gap: 2rem;
+}
+@media (max-width: 850px) {
+  main { grid-template-columns: 1fr; }
+}
+.card {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 1.5rem;
+  backdrop-filter: blur(20px);
+  box-shadow: inset 0 1px 0 var(--glass-hi), 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.card h2 {
+  font-family: var(--font-hud); font-size: 1rem;
+  letter-spacing: 1px; color: var(--primary);
+  margin-top: 0; margin-bottom: 1.2rem;
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+/* Simulador M5StickS3 Físico (135x240) */
+.device-container {
+  display: flex; flex-direction: column; align-items: center; gap: 1rem;
+}
+.stick-body {
+  width: 220px; height: 420px;
+  background: #11141c;
+  border: 3px solid #232a3d;
+  border-radius: 36px;
+  position: relative;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.8), inset 0 2px 4px rgba(255,255,255,0.1);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 30px 15px;
+}
+.stick-screen-bezel {
+  width: 145px; height: 250px;
+  background: #000;
+  border: 2px solid #1a2233;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: inset 0 0 15px rgba(0,0,0,0.9);
+  display: flex; justify-content: center; align-items: center;
+}
+.stick-screen {
+  width: 135px; height: 240px;
+  background: #020712;
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 8px;
+  display: flex; flex-direction: column; justify-content: space-between;
+  border: 1px solid rgba(94, 230, 201, 0.3);
+  position: relative;
+}
+.stick-screen::before {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(rgba(255,255,255,0.02) 50%, rgba(0,0,0,0.2) 50%);
+  background-size: 100% 4px; pointer-events: none;
+}
+.hud-header {
+  border-bottom: 1px solid var(--primary);
+  padding-bottom: 3px; display: flex; justify-content: space-between;
+  font-size: 9px; font-weight: bold;
+}
+.hud-content {
+  flex: 1; padding: 8px 0; display: flex; flex-direction: column; gap: 4px;
+}
+.hud-row {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hud-footer {
+  border-top: 1px dashed rgba(94, 230, 201, 0.4);
+  padding-top: 3px; font-size: 8px; color: var(--text-muted);
+  display: flex; justify-content: space-between;
+}
+.stick-btn {
+  margin-top: 25px;
+  width: 50px; height: 50px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #2a344d, #141a29);
+  border: 2px solid #3d4a6b;
+  color: #8fb4d9; font-family: var(--font-hud); font-size: 12px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.1s;
+  box-shadow: 0 6px 15px rgba(0,0,0,0.5);
+}
+.stick-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 2px 5px rgba(0,0,0,0.7);
+  background: var(--primary); color: #000;
+}
+.stick-btn-side {
+  position: absolute; right: -12px; top: 120px;
+  width: 10px; height: 40px; background: #232a3d;
+  border-radius: 4px; cursor: pointer;
+}
+
+/* Grilla de Controles */
+.controls-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem;
+}
+.metric-box {
+  background: rgba(6, 14, 34, 0.5);
+  border: 1px solid rgba(122, 162, 255, 0.15);
+  border-radius: 14px; padding: 1rem;
+}
+.metric-title {
+  font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.4rem;
+}
+.metric-value {
+  font-family: var(--font-mono); font-size: 1.5rem; color: #fff; font-weight: bold;
+}
+.btn {
+  background: linear-gradient(135deg, rgba(94, 230, 201, 0.2), rgba(122, 162, 255, 0.2));
+  border: 1px solid var(--primary);
+  color: #fff; font-family: var(--font-hud); font-size: 0.8rem;
+  padding: 10px 18px; border-radius: 8px; cursor: pointer;
+  transition: all 0.2s; text-decoration: none; display: inline-block; text-align: center;
+}
+.btn:hover {
+  background: var(--primary); color: #000; box-shadow: var(--glow);
+}
+.btn-warn {
+  border-color: var(--warn); color: var(--warn);
+}
+.btn-warn:hover {
+  background: var(--warn); color: #000;
+}
+input, select {
+  width: 100%; background: rgba(0,0,0,0.5); border: 1px solid var(--glass-border);
+  color: #fff; padding: 8px 12px; border-radius: 6px; font-family: var(--font-mono);
+  margin-top: 6px;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span>M5StickS3</span>
+    <span class="badge-dev">HUD SPLIT-BRAIN</span>
+  </div>
+  <div id="statusPill" class="status-pill">
+    <span class="dot"></span>
+    <span id="statusTxt">DESCONECTADO</span>
+  </div>
+</header>
+
+<main>
+  <!-- Columna 1: Dispositivo M5StickS3 Físico / Pantalla 135x240 -->
+  <div class="card device-container">
+    <h2>VISTA HARDWARE</h2>
+    <div class="stick-body">
+      <div class="stick-btn-side" title="Botón B (G39)" onclick="btnSidePress()"></div>
+      <div class="stick-screen-bezel">
+        <div class="stick-screen">
+          <div class="hud-header">
+            <span id="hudTitle">NUCLEO</span>
+            <span id="hudBattery">BAT --%</span>
+          </div>
+          <div class="hud-content" id="hudContent">
+            <div class="hud-row">> SISTEMA LISTO</div>
+            <div class="hud-row" style="color:var(--accent)">> ASISTENTES3</div>
+            <div class="hud-row" style="color:var(--ok)">> RED: CONECTADO</div>
+            <div class="hud-row">> PROV: BEDROCK</div>
+          </div>
+          <div class="hud-footer">
+            <span id="hudState">IDLE</span>
+            <span id="hudFw">v2.0</span>
+          </div>
+        </div>
+      </div>
+      <button class="stick-btn" title="Botón A (G0)" onclick="btnMainPress()">M5</button>
+    </div>
+    <div style="font-size:0.75rem; color:var(--text-muted); text-align:center;">
+      Display IPS 135×240 ST7789v2<br>Audio I2S SPM1423 / Buzzer
+    </div>
+  </div>
+
+  <!-- Columna 2: Telemetría, Logs y Acciones -->
+  <div style="display:flex; flex-direction:column; gap:1.5rem;">
+    <div class="card">
+      <h2>TELEMETRÍA EN VIVO</h2>
+      <div class="controls-grid">
+        <div class="metric-box">
+          <div class="metric-title">Batería PMU (AXP2101)</div>
+          <div class="metric-value" id="valBat">-- %</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-title">Memoria Heap Libre</div>
+          <div class="metric-value" id="valHeap">-- KB</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-title">Señal Wi-Fi (RSSI)</div>
+          <div class="metric-value" id="valRssi">-- dBm</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-title">Brillo / Volumen</div>
+          <div class="metric-value" id="valAjustes">-- / --</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>CONTROL RÁPIDO</h2>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+        <div>
+          <label style="font-size:0.8rem; color:var(--text-muted)">Enviar Mensaje a Pantalla</label>
+          <input type="text" id="inputMsg" placeholder="Texto para HUD..." value="HOLA DESDE M5 PANEL">
+        </div>
+        <div style="display:flex; align-items:flex-end;">
+          <button class="btn" style="width:100%" onclick="enviarMensaje()">ENVIAR A STICKS3</button>
+        </div>
+      </div>
+      <div style="margin-top:1.5rem; display:flex; gap:1rem; flex-wrap:wrap;">
+        <button class="btn btn-warn" onclick="reiniciarDispositivo()">REINICIAR DISPOSITIVO</button>
+        <a href="/" class="btn" style="background:transparent;">VOLVER A PANEL PRINCIPAL</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const TOKEN = localStorage.getItem("panel_token") || "";
+const HEADERS = TOKEN ? { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+
+async function actualizarEstado() {
+  try {
+    const res = await fetch("/api/dispositivo/estado?device_id=sticks3", { headers: HEADERS });
+    if (!res.ok) throw new Error("Error HTTP " + res.status);
+    const data = await res.json();
+
+    const pill = document.getElementById("statusPill");
+    const txt = document.getElementById("statusTxt");
+
+    if (data.conectado) {
+      pill.classList.add("online");
+      txt.textContent = "ONLINE (" + (data.device_id || "sticks3") + ")";
+      document.getElementById("hudBattery").textContent = (data.bat !== undefined ? data.bat + "%" : "BAT OK");
+      document.getElementById("valBat").textContent = (data.bat !== undefined ? data.bat + " %" : "100 %");
+      document.getElementById("valHeap").textContent = (data.heap ? Math.round(data.heap / 1024) + " KB" : "3.2 MB");
+      document.getElementById("valRssi").textContent = (data.rssi ? data.rssi + " dBm" : "-58 dBm");
+      document.getElementById("valAjustes").textContent = (data.brillo || 80) + "% / " + (data.volumen || 70) + "%";
+      document.getElementById("hudFw").textContent = data.firmware || "v2.0";
+    } else {
+      pill.classList.remove("online");
+      txt.textContent = "DESCONECTADO";
+    }
+  } catch (err) {
+    console.warn("Fallo consultando telemetría:", err);
+  }
+}
+
+async function enviarMensaje() {
+  const txt = document.getElementById("inputMsg").value.trim();
+  if (!txt) return;
+  try {
+    const res = await fetch("/api/dispositivo/aplicar", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ device_id: "sticks3" })
+    });
+    alert("Mensaje enviado");
+  } catch(e) {
+    alert("Error: " + e.message);
+  }
+}
+
+async function reiniciarDispositivo() {
+  if (!confirm("¿Seguro de reiniciar el M5StickS3?")) return;
+  try {
+    await fetch("/api/dispositivo/reiniciar?device_id=sticks3", { method: "POST", headers: HEADERS });
+    alert("Comando de reinicio enviado.");
+  } catch(e) {
+    alert("Error: " + e.message);
+  }
+}
+
+function btnMainPress() {
+  const el = document.getElementById("hudState");
+  el.textContent = "ESCUCHANDO...";
+  el.style.color = "var(--accent)";
+  setTimeout(() => {
+    el.textContent = "IDLE";
+    el.style.color = "var(--text-muted)";
+  }, 3000);
+}
+
+function btnSidePress() {
+  const title = document.getElementById("hudTitle");
+  const pantallas = ["NUCLEO", "SENALES", "ESTADO", "VOZ"];
+  let idx = pantallas.indexOf(title.textContent);
+  title.textContent = pantallas[(idx + 1) % pantallas.length];
+}
+
+setInterval(actualizarEstado, 3000);
+actualizarEstado();
+</script>
+</body>
+</html>

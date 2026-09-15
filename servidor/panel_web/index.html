@@ -342,6 +342,8 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
     <h1 id="titulo-app">Panel — <span>Asistente ESP32</span></h1>
   </div>
   <div id="estado-conexion"><span class="dot"></span>conectando…</div>
+  <a class="btn chico" href="/sticks3" target="_blank" rel="noopener"
+     title="Panel dedicado del M5StickS3 (ola 1: multi-dispositivo)">📟 Stick</a>
 </header>
 
 <nav class="tabs glass">
@@ -368,6 +370,20 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
       <h2>Servicio de voz</h2>
       <div class="sub">Reinicia el bridge websocket_bridge.py (systemd). No reinicia el ESP32.</div>
       <button class="btn" onclick="reiniciarVoz()">↻ Reiniciar servicio de voz</button>
+    </div>
+
+    <div class="tarjeta glass" style="border-color:#f59e0b66">
+      <h2>🛡️ Aprobación física <small>demo</small></h2>
+      <div class="sub">
+        Dispara una pregunta en el HUD ahora mismo, sin pasar por el LLM.
+        Es el mismo mecanismo que usa el agente cuando pide permiso antes de
+        algo irreversible: si no tocás nada en la placa, no pasa nada.
+      </div>
+      <input type="text" id="demo-pregunta" style="width:100%" value="¿BORRAR EL INFORME?">
+      <button class="btn primario" style="margin-top:10px" onclick="demoAprobacion()">
+        🛡️ Pedir aprobación en el HUD
+      </button>
+      <div id="demo-aprobacion-resultado" class="aviso oculto"></div>
     </div>
   </section>
 
@@ -751,6 +767,25 @@ async function crearMcp(){
     document.getElementById("nuevo-desc").value = "";
     cargarMcp();
   } catch(e){ alert("no se pudo crear: " + e.message); }
+}
+async function demoAprobacion(){
+  const texto = document.getElementById("demo-pregunta").value.trim() || "¿AUTORIZAS ESTA ACCION?";
+  const res = document.getElementById("demo-aprobacion-resultado");
+  res.classList.remove("oculto");
+  res.textContent = "esperando que toques SI o NO en la placa… (30s)";
+  try {
+    const r = await api("/api/demo/aprobacion", {method:"POST",
+      body: JSON.stringify({texto, opciones:["SI","NO"], timeout:30})});
+    const v = r.resultado || {};
+    if (v.respondido) {
+      res.textContent = (v.opcion === "SI" ? "✅ Aprobado" : "❌ Rechazado")
+                       + ` — tocaste "${v.opcion}" en ${v.segundos}s`;
+    } else {
+      res.textContent = "⏱️ Nadie tocó nada — la acción NO se ejecuta (así es como debe ser).";
+    }
+  } catch(e){
+    res.textContent = "no se pudo: " + e.message;
+  }
 }
 async function reiniciarVoz(){
   try { await api("/api/servicio-voz/reiniciar", {method:"POST"}); alert("reiniciado"); }

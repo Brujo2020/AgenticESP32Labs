@@ -412,18 +412,28 @@ class DispositivoConfigIn(BaseModel):
     volumen: Optional[int] = None
     tema_hud: Optional[str] = None
     efectos: Optional[bool] = None
+    # Ola 1 (multi-dispositivo): sin esto, "aplicar" siempre caia en el
+    # canal por defecto ('bola') sin importar que dispositivo pidiera el
+    # cambio desde el panel -- el Stick no tenia forma de que le llegara.
+    device_id: Optional[str] = None
 
 
 @app.post("/api/dispositivo/aplicar", dependencies=router_dep)
 async def dispositivo_aplicar(body: DispositivoConfigIn):
-    args = {k: v for k, v in body.dict().items() if v is not None}
+    datos = body.dict()
+    device_id = datos.pop("device_id", None)
+    args = {k: v for k, v in datos.items() if v is not None}
     if not args:
         raise HTTPException(400, "nada que aplicar")
-    v = await _control_llama("configurar", args)
+    args_envio = dict(args)
+    if device_id:
+        args_envio["device_id"] = device_id
+    v = await _control_llama("configurar", args_envio)
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
     # Se guarda tambien en ajustes.dispositivo para que el panel recuerde
     # lo ultimo pedido, independientemente de si el firmware lo aplico.
+    # (Sin el device_id: es un recordatorio de UI, no estado de un canal.)
     actuales = _lee_ajustes()
     actuales["dispositivo"].update(args)
     _guarda_ajustes(actuales)
@@ -500,8 +510,20 @@ async def voz_probar(body: VozIn):
         headers={"X-Proveedor": cadena.activo.nombre})
 
 
+@app.get("/api/dispositivos", dependencies=router_dep)
+async def dispositivos_listar():
+    """Lista todos los dispositivos registrados en el puente WebSocket."""
+    try:
+        v = await _control_llama("estado_todos", {}, timeout=5)
+    except HTTPException as e:
+        return {"error": str(e.detail), "dispositivos": {}}
+    if not isinstance(v, dict):
+        return {"error": str(v), "dispositivos": {}}
+    return {"ok": True, "dispositivos": v}
+
+
 @app.get("/api/dispositivo/estado", dependencies=router_dep)
-async def dispositivo_estado():
+async def dispositivo_estado(device_id: Optional[str] = None):
     """Estado REAL de la placa, no lo ultimo que el panel le mando.
 
     El firmware publica brillo, volumen, tema, bateria, heap y RSSI al
@@ -513,7 +535,8 @@ async def dispositivo_estado():
     panel lo pinta como 'sin dispositivo' en vez de romperse.
     """
     try:
-        v = await _control_llama("estado", {}, timeout=5)
+        args = {"device_id": device_id} if device_id else {}
+        v = await _control_llama("estado", args, timeout=5)
     except HTTPException as e:
         return {"conectado": False, "motivo": str(e.detail)}
     if not isinstance(v, dict):
@@ -549,9 +572,37 @@ async def dispositivo_wifi(body: WifiIn):
     return {"ok": True, "resultado": v}
 
 
+class AprobacionIn(BaseModel):
+    texto: str = "AUTORIZAS ESTA ACCION?"
+    opciones: list = None
+    timeout: int = 30
+
+
+@app.post("/api/demo/aprobacion", dependencies=router_dep)
+async def demo_aprobacion(body: AprobacionIn):
+    """Dispara el flujo de aprobacion fisica DIRECTO, sin pasar por el LLM.
+
+    Existe para la demo: el momento fuerte de la charla es "el agente pide
+    permiso y sin el dedo humano no pasa nada", y eso no deberia depender de
+    que el modelo decida llamar confirmar_accion en el momento justo delante
+    de la sala. Este boton dispara EXACTAMENTE el mismo comando de control
+    ('pregunta') que usa vigia.confirmar_accion -- la misma aprobacion
+    firmada con HMAC (ver nucleo/guardia.py), solo que el disparador es un
+    click en vez de una decision del LLM.
+    """
+    opciones = body.opciones or ["SI", "NO"]
+    v = await _control_llama("pregunta", {
+        "txt": body.texto, "opciones": opciones, "timeout": body.timeout,
+    }, timeout=body.timeout + 5)
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return {"ok": True, "resultado": v}
+
+
 @app.post("/api/dispositivo/reiniciar", dependencies=router_dep)
-async def dispositivo_reiniciar():
-    v = await _control_llama("reiniciar", {})
+async def dispositivo_reiniciar(device_id: Optional[str] = None):
+    args = {"device_id": device_id} if device_id else {}
+    v = await _control_llama("reiniciar", args)
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
     return {"ok": True, "resultado": v}
@@ -567,6 +618,14 @@ if WEB.exists():
     @app.get("/")
     def index():
         return FileResponse(WEB / "index.html")
+
+    @app.get("/sticks3")
+    def sticks3_panel():
+        p = WEB / "sticks3.html"
+        if not p.exists():
+            raise HTTPException(404, "panel sticks3 no encontrado")
+        return FileResponse(p)
+
 
 
 # El simulador de HUD que ya existe en tools/ es un puerto fiel de display.c

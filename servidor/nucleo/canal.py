@@ -1,13 +1,19 @@
 """
-Canal hacia el ESP32 conectado.
+Canal hacia un dispositivo conectado (bola blanca, M5StickS3, ...).
 
-Singleton porque hay un solo dispositivo. Lo usan tanto el puente WebSocket
-(que lo alimenta) como el MCP 'dispositivo' (que lo consume desde otro proceso
-via stdio -> ver mcps/dispositivo.py, que habla por HTTP local con este canal).
+Un objeto `Canal` por dispositivo, todo su estado aislado (socket, vistas,
+preguntas pendientes, limites, estado reportado). El registro
+`RegistroDispositivos` es lo unico que sabe cuantos dispositivos hay: nadie
+mas debe guardar una referencia larga a un Canal salvo quien lo esta usando
+en el momento.
 
-Concentra dos responsabilidades que no conviene repartir:
-  - saber si hay dispositivo y cuales son sus limites reales (handshake)
-  - resolver las preguntas pendientes, que son peticiones bloqueantes
+Ola 1 (brain-multidispositivo): antes de esto existia un singleton global
+`CANAL` para un solo dispositivo. El intento de hacerlo multi-dispositivo
+dejo un alias de modulo (`CANAL = REGISTRO._default`) que quedaba
+desincronizado en cuanto el registro reasignaba cual era "el default" -- el
+camino de voz seguia hablando con el canal viejo. Aqui no se arregla el
+alias: se elimina el concepto de canal global. Quien necesite un canal, lo
+pide al registro con un device_id, o lo recibe como argumento.
 """
 import asyncio, json, logging, time
 from dataclasses import dataclass, field
@@ -17,6 +23,11 @@ log = logging.getLogger("canal")
 # Limites por defecto. El handshake del firmware los sobreescribe: son el
 # tamano de sus buffers estaticos, no una preferencia.
 LIMITES = {"vistas_max": 8, "filas_max": 6, "ancho": 26}
+
+# Servicios periodicos que un dispositivo puede recibir. Hasta la ola 2
+# (protocolo v2.1, campo 'servicios' en el hola) todo canal los quiere todos:
+# es el comportamiento que ya existia con un solo dispositivo.
+SERVICIOS = {"noticias", "telemetria", "alertas"}
 
 # Modo compatibilidad con el firmware v1 (el que no manda handshake).
 # Ese firmware no sabe de vistas declarativas, pero SI tiene tres pantallas
@@ -43,12 +54,23 @@ NIVELES = {"info", "ok", "warn", "error"}
 # cambiar uno sin el otro desincroniza el panel del firmware.
 ACENTOS_ORDEN = ["cyan", "magenta", "lime", "amber", "ice", "blood", "grey", "white"]
 
+# device_id del dispositivo que no manda identidad explicita en el hola (o
+# que ni siquiera saluda: firmware v1). Es la bola blanca, hoy la unica
+# placa en produccion -- ver PLAN.md ley 1. NO es un nombre generico tipo
+# "default": un id fijo y con nombre es lo que permite que /api/dispositivo
+# resuelva sin ambiguedad a "el dispositivo de siempre" cuando no se pide
+# ninguno en concreto.
+DEVICE_ID_POR_DEFECTO = "bola"
+
 
 @dataclass
 class Canal:
     ws: object = None
     fw: str = ""
+    device_id: str = DEVICE_ID_POR_DEFECTO
+    device_type: str = "bola"  # "bola" o "sticks3"
     limites: dict = field(default_factory=lambda: dict(LIMITES))
+    servicios: set = field(default_factory=lambda: set(SERVICIOS))
     vistas: dict = field(default_factory=dict)
     _pendientes: dict = field(default_factory=dict)   # qid -> Future
     _resueltas: dict = field(default_factory=dict)    # qid -> resultado archivado
@@ -56,7 +78,7 @@ class Canal:
     _opciones: dict = field(default_factory=dict)     # qid -> etiquetas
     _qid: int = 0
     estado: dict = field(default_factory=dict)
-    # Serializa TODA escritura hacia el ESP32. Ver Canal.send().
+    # Serializa TODA escritura hacia ESTE dispositivo. Ver Canal.send().
     _lock_envio: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # ---------------- conexion ----------------
@@ -66,7 +88,7 @@ class Canal:
 
     def conecta(self, ws):
         self.ws = ws
-        log.info("dispositivo conectado")
+        log.info("dispositivo '%s' (%s) conectado", self.device_id, self.device_type)
 
     def desconecta(self):
         self.ws = None
@@ -76,7 +98,7 @@ class Canal:
                 fut.set_result(-1)
         self._pendientes.clear()
         self.vistas.clear()
-        log.info("dispositivo desconectado")
+        log.info("dispositivo '%s' desconectado", self.device_id)
 
     @property
     def v2(self) -> bool:
@@ -88,34 +110,46 @@ class Canal:
         for k in LIMITES:
             if isinstance(data.get(k), int) and data[k] > 0:
                 self.limites[k] = data[k]
-        log.info("handshake fw=%s limites=%s", self.fw, self.limites)
+        # Ola 2 (protocolo v2.1) llenara esto desde el campo 'servicios' del
+        # hola. Hasta entonces, todo dispositivo quiere todos los servicios:
+        # es el comportamiento que ya existia con un solo dispositivo.
+        log.info("handshake '%s' fw=%s limites=%s", self.device_id, self.fw, self.limites)
+
+    def quiere(self, servicio: str) -> bool:
+        """¿Este canal quiere recibir el servicio periodico dado?
+
+        Stub hasta la ola 2: siempre True. Cuando el hola declare
+        'servicios', esto respetara lo que el dispositivo pidio (por
+        ejemplo, un Stick de bolsillo puede no querer noticias).
+        """
+        return servicio in self.servicios
 
     async def send(self, dato):
-        """UNICA puerta de escritura hacia el ESP32. Serializa con un lock.
+        """UNICA puerta de escritura hacia ESTE dispositivo. Serializa con
+        un lock propio del canal.
 
-        Hace falta porque hay varios productores escribiendo a la vez sobre el
-        mismo socket: el bucle que atiende la voz (que manda el audio de la
-        respuesta troceado en decenas de frames seguidos), la tarea de
+        Hace falta porque hay varios productores escribiendo a la vez sobre
+        el mismo socket: el bucle que atiende la voz (que manda el audio de
+        la respuesta troceado en decenas de frames seguidos), la tarea de
         telemetria (cada 5 s), la de noticias, y los comandos que llegan por
         el canal de control. 'websockets' NO admite escrituras concurrentes:
         si una tarea escribe en mitad del envio de otra, los frames se
         intercalan, el stream queda corrupto y el dispositivo cierra la
         conexion.
 
-        El sintoma era exactamente ese: la primera respuesta se oia y a partir
-        de la segunda el ESP32 aparecia desconectado del puente. Con la
-        telemetria cada 5 segundos y una respuesta de audio que dura varios,
-        la colision estaba practicamente garantizada.
+        Con dos dispositivos, este lock vive en el Canal y no en un objeto
+        compartido: lo que tarde el Stick en su turno no bloquea nada de lo
+        que le toque a la bola, y viceversa.
         """
         ws = self.ws
         if ws is None:
-            raise RuntimeError("no hay dispositivo conectado")
+            raise RuntimeError(f"no hay dispositivo conectado ('{self.device_id}')")
         async with self._lock_envio:
             await ws.send(dato)
 
     async def _envia(self, obj: dict):
         if not self.ws:
-            raise RuntimeError("no hay dispositivo conectado")
+            raise RuntimeError(f"no hay dispositivo conectado ('{self.device_id}')")
         await self.send(json.dumps(obj, ensure_ascii=False))
 
     # ---------------- vistas ----------------
@@ -399,14 +433,88 @@ class Canal:
     def snapshot(self) -> dict:
         return {
             "conectado": self.vivo,
+            "device_id": self.device_id,
+            "device_type": self.device_type,
             "protocolo": "v2" if self.v2 else "v1 (compatibilidad)",
             "destinos": (sorted(self.vistas) if self.v2
                          else [f"{k} -> pantalla {v[3]}" for k, v in CANALES_V1.items()]),
             "firmware": self.fw or None,
             "vistas_activas": sorted(self.vistas),
             "limites": self.limites,
+            "servicios": sorted(self.servicios),
             **self.estado,
         }
 
 
-CANAL = Canal()
+class RegistroDispositivos:
+    """Registro de todos los canales concurrentes (bola blanca, Stick, ...).
+
+    Unica estructura: `_canales`, un dict device_id -> Canal. No hay un
+    objeto "default" aparte -- esa doble contabilidad (un dict MAS un
+    puntero especial) fue justo lo que en el intento anterior dejo un alias
+    de modulo (`CANAL`) apuntando a un canal que dejo de ser el que importaba.
+    """
+
+    def __init__(self):
+        self._canales: dict[str, "Canal"] = {}
+
+    def _crea(self, device_id: str, device_type: str) -> "Canal":
+        c = Canal(device_id=device_id, device_type=device_type)
+        self._canales[device_id] = c
+        return c
+
+    def obtener_o_crear(self, device_id: str, device_type: str = "bola") -> "Canal":
+        """Usado por el puente al recibir una conexion de dispositivo (o su
+        handshake). Crea el canal si es la primera vez que se ve ese id."""
+        device_id = device_id or DEVICE_ID_POR_DEFECTO
+        c = self._canales.get(device_id)
+        if c is None:
+            c = self._crea(device_id, device_type)
+        else:
+            c.device_type = device_type
+        return c
+
+    def obtener(self, device_id: str = None) -> "Canal":
+        """Resuelve un canal para leer/mandar un comando (MCP, panel).
+
+        Regla explicita, sin heuristicas ocultas:
+          - con device_id: ese canal (se crea vacio -- no vivo -- si no
+            existia, para poder responder "no conectado" en vez de fallar).
+          - sin device_id: el canal 'bola' si esta vivo; si no, el unico
+            canal vivo si hay exactamente uno; si no, 'bola' (vivo o no).
+        """
+        if device_id:
+            c = self._canales.get(device_id)
+            return c if c is not None else self._crea(device_id, "bola")
+
+        bola = self._canales.get(DEVICE_ID_POR_DEFECTO)
+        if bola is not None and bola.vivo:
+            return bola
+        vivos = self.vivos()
+        if len(vivos) == 1:
+            return vivos[0]
+        if bola is not None:
+            return bola
+        return self._crea(DEVICE_ID_POR_DEFECTO, "bola")
+
+    def por_socket(self, ws) -> "Canal | None":
+        """Dueño del socket dado, o None si no es ningun canal registrado
+        (p.ej. una conexion de control, que no pasa por este registro)."""
+        for c in self._canales.values():
+            if c.ws is ws:
+                return c
+        return None
+
+    def vivos(self) -> list:
+        return [c for c in self._canales.values() if c.vivo]
+
+    def desconectar(self, device_id: str):
+        c = self._canales.get(device_id)
+        if c is not None:
+            c.desconecta()
+
+    def snapshot_todos(self) -> dict:
+        return {dev_id: c.snapshot() for dev_id, c in self._canales.items()}
+
+
+REGISTRO_DISPOSITIVOS = RegistroDispositivos()

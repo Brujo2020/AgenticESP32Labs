@@ -818,12 +818,30 @@ async def vigila_ritmo():
             if snap.get("activo"):
                 acento = _SEMAFORO_ACENTO.get(snap["activo"].get("semaforo"), "cyan")
             filas = _pinta_vista_ritmo(snap)
+            semaforo = (snap.get("activo") or {}).get("semaforo", "normal")
             guardadas = MOTOR.guardadas()
             for c in destinos:
                 try:
                     await c.mostrar("ritmo", "RITMO", filas, acento=acento)
                 except Exception as e:
                     log.warning("ritmo: no se pudo pintar en '%s': %s", c.device_id, e)
+                # Ademas del 'vista' anidado de arriba (que scifi_hud.cc sabe
+                # pintar con color/badge por fila cuando ese componente este
+                # enlazado), se difunden las MISMAS lineas como mensajes
+                # planos "ritmo_linea"/"ritmo_reset"/"ritmo_acento" -- el
+                # patron que ya usa difunde_noticias() para SEÑALES. Es lo
+                # que el bring-up del Stick (protocolo_v2.c, sin parser JSON
+                # anidado) sabe leer hoy (15/sep/2026, Fase A+B del plan
+                # acordado con Mario). Un dispositivo que ya entiende el
+                # 'vista' anidado simplemente ignora estos tipos desconocidos
+                # (mismo "solo se loguea" de siempre) -- no hay regresion.
+                try:
+                    await envia_a_canal(c, "ritmo_reset", "")
+                    for fila in filas:
+                        await envia_a_canal(c, "ritmo_linea", fila)
+                    await envia_a_canal(c, "ritmo_acento", semaforo)
+                except Exception as e:
+                    log.warning("ritmo: no se pudo difundir plano a '%s': %s", c.device_id, e)
                 # Vista dedicada de bandeja (Fase 2, tasks.md: "cierra el
                 # pendiente que dejó abierto superpower/tasks.md"): cuantos
                 # avisos esperan un hueco (RF-5 de superpower), aparte de la

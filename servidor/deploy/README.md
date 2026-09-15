@@ -10,6 +10,34 @@ la ruta real de cada servidor antes de copiarlas a `/etc/systemd/system/`.
 Confirmado funcionando: panel accesible por IP con token, `agentic-voz` y
 `agentic-panel` corriendo como servicios systemd independientes.
 
+## Camino recomendado (ola 8, operacion): `instalar.sh`
+
+Todo lo de mas abajo -- venv, requirements, token del panel, ajuste de ruta
+de las unidades systemd, arranque -- lo hace **un solo script idempotente**,
+pensado para "clonar y correr" en un servidor nuevo Y para "volver a correr"
+en uno existente tras un `git pull` sin duplicar nada ni pisar secretos:
+
+```bash
+cd ~/AgenticESP32Labs && git pull
+cd servidor/deploy
+./instalar.sh
+```
+
+Variables opcionales (ver la cabecera del script para el detalle):
+
+- `SIN_SERVICIOS=1 ./instalar.sh` -- deja el venv y el `.env` listos sin
+  tocar systemd (util para probar en local antes de instalar como servicio).
+- `TOKEN_OBLIGATORIO=1 ./instalar.sh` -- ademas genera `HUD_TOKEN` y exige
+  que los dispositivos se autentiquen (por defecto el servidor arranca en
+  modo abierto, una decision explicita -- ver `PROTOCOLO.md`). Genera el
+  valor en el `.env` del servidor; grabar el MISMO valor en la NVS de cada
+  cuerpo (bola, Stick) sigue siendo un paso aparte, de firmware, que este
+  script no puede hacer.
+
+Verificar: `curl -s http://127.0.0.1:8766/api/salud`. Los pasos manuales de
+mas abajo son el detalle de lo que `instalar.sh` automatiza -- utiles para
+entender que hace, o si algo falla y hay que repetir un paso a mano.
+
 ## Arranque de hoy: sin dominio, sin TLS
 
 `agentic-panel.service` escucha en `0.0.0.0:8766` (todas las interfaces) --
@@ -81,3 +109,10 @@ sudo ln -s /etc/nginx/sites-available/panel /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d TU-DOMINIO
 ```
+
+`nginx-panel.conf` proxyea DOS cosas: `/` al panel (8766) y `/voz` al
+puente de voz (8765, con las cabeceras `Upgrade`/`Connection` que un
+WebSocket necesita). Tras el `certbot` de arriba, el firmware podria
+conectar a `wss://TU-DOMINIO/voz` en vez de `ws://IP:8765` en claro -- esa
+mitad (validar el certificado en el ESP32) todavia no esta hecha, depende
+de las olas de firmware (3-7); el lado servidor ya esta listo esperandola.

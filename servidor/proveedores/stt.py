@@ -221,9 +221,81 @@ class STTOpenAICompatible(ProveedorSTT):
             raise ErrorProveedor(f"{self.nombre}: {e}") from e
 
 
+class STTFasterWhisper(ProveedorSTT):
+    """Whisper local, sin red y sin coste. Es el STT por defecto del Stick.
+
+    Por que faster-whisper y no el 'whisper' de OpenAI: es la misma familia de
+    modelos reimplementada sobre CTranslate2, con cuantizacion int8. En la CPU
+    de un Lightsail de 4 GB eso es la diferencia entre caber y no caber --
+    'base' en int8 ocupa ~400 MB residentes frente a mas de 1 GB del original,
+    y transcribe una frase corta en ~1 s en vez de varios.
+
+    El modelo se carga la PRIMERA vez que se transcribe, no al construir el
+    proveedor. Asi, un servidor cuya cadena tenga este STT de respaldo pero
+    nunca llegue a usarlo no paga esos 400 MB. El precio es que la primera
+    transcripcion de cada arranque tarda lo que tarde en cargar (~2-4 s).
+
+    Si la libreria no esta instalada, disponible() devuelve False y la cadena
+    degrada sola al siguiente proveedor: no rompe el arranque.
+    """
+    nombre = "faster-whisper"
+
+    def __init__(self, nombre="faster-whisper", cfg=None):
+        cfg = cfg or {}
+        self.nombre = nombre
+        # 'base' es el punto de equilibrio en 2 vCPU: 'tiny' confunde palabras
+        # parecidas en espanol y 'small' casi triplica la RAM (~1,1 GB) para
+        # una mejora que en frases de mando corto apenas se nota. Subir a
+        # 'small' es cambiar esta linea, si la maquina tiene holgura.
+        self.model_size = cfg.get("model", "base")
+        self.device = cfg.get("device", "cpu")
+        self.compute_type = cfg.get("compute_type", "int8")
+        # beam_size 1 = busqueda voraz. Con beam 5 la precision sube poco en
+        # audio corto y el tiempo casi se dobla; en un asistente de voz la
+        # latencia se nota mas que el ultimo punto de WER.
+        self.beam_size = int(cfg.get("beam_size", 1))
+        self.download_root = cfg.get("download_root") or None
+        self._modelo = None
+
+    def disponible(self) -> bool:
+        import importlib.util
+        return importlib.util.find_spec("faster_whisper") is not None
+
+    def _carga(self):
+        if self._modelo is None:
+            from faster_whisper import WhisperModel
+            self._modelo = WhisperModel(
+                self.model_size,
+                device=self.device,
+                compute_type=self.compute_type,
+                download_root=self.download_root,
+            )
+        return self._modelo
+
+    def transcribir(self, wav_path, idioma="es") -> str:
+        try:
+            modelo = self._carga()
+            segmentos, _info = modelo.transcribe(
+                wav_path,
+                language=idioma,
+                beam_size=self.beam_size,
+                # El bridge ya entrega solo el tramo hablado: un segundo VAD
+                # aqui a veces se come el arranque de la frase.
+                vad_filter=False,
+                # Sin esto Whisper arrastra el texto del turno anterior como
+                # contexto y, ante un audio corto o ruidoso, tiende a repetir
+                # esa frase en vez de admitir que no entendio nada.
+                condition_on_previous_text=False,
+            )
+            return " ".join(s.text.strip() for s in segmentos).strip()
+        except Exception as e:
+            raise ErrorProveedor(f"{self.nombre}: {e}") from e
+
+
 REGISTRO_STT = {
     "transcribe": STTTranscribe,
     "mlx-whisper": STTWhisperMLX,
     "groq": STTGroq,
     "openai-compatible": STTOpenAICompatible,
+    "faster-whisper": STTFasterWhisper,
 }

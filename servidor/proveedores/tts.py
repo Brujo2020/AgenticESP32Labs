@@ -274,8 +274,73 @@ class TTSOpenAICompatibleWav(TTSOpenAICompatible):
         return pcm
 
 
+class TTSEdge(ProveedorTTS):
+    """Microsoft Edge TTS: neuronal, gratis, sin API key, online.
+
+    Es el TTS por defecto de AsistenteS3 (voz es-ES-ElviraNeural) porque no
+    exige cuenta ni tarjeta como Polly, y suena mejor que Piper. El precio es
+    que necesita salir a internet (endpoint de Microsoft) y no tiene SLA: por
+    eso 'piper' (100% local) va como respaldo en la cadena, no al reves.
+
+    edge-tts solo entrega MP3 en streaming, nunca PCM crudo -- por eso el
+    unico camino sin dependencias Python nuevas es tuberia a traves de
+    ffmpeg (ya lo trae la imagen del servidor de voz), igual que hacen
+    xiaozhi-server y el resto del ecosistema Xiaozhi con este mismo proveedor.
+    """
+    nombre = "edge"
+
+    def __init__(self, nombre="edge", cfg=None):
+        cfg = cfg or {}
+        self.nombre = nombre
+        self.voz = cfg.get("voice", "es-ES-ElviraNeural")
+        rate = cfg.get("rate", 0)
+        volume = cfg.get("volume", 0)
+        pitch = cfg.get("pitch", 0)
+        self.rate = f"{int(rate):+}%"
+        self.volume = f"{int(volume):+}%"
+        self.pitch = f"{int(pitch):+}Hz"
+
+    def disponible(self) -> bool:
+        import importlib.util
+        return importlib.util.find_spec("edge_tts") is not None and bool(shutil.which("ffmpeg"))
+
+    async def _sintetiza_mp3(self, texto: str) -> bytes:
+        import edge_tts
+        comunicador = edge_tts.Communicate(
+            texto, voice=self.voz, rate=self.rate, volume=self.volume, pitch=self.pitch,
+        )
+        trozos = bytearray()
+        async for evento in comunicador.stream():
+            if evento["type"] == "audio":
+                trozos.extend(evento["data"])
+        return bytes(trozos)
+
+    def sintetizar(self, texto, sample_rate=16000) -> bytes:
+        import asyncio
+        try:
+            mp3 = asyncio.run(self._sintetiza_mp3(texto))
+        except Exception as e:
+            raise ErrorProveedor(f"{self.nombre}: {e}") from e
+        if not mp3:
+            raise ErrorProveedor(f"{self.nombre}: Edge no devolvio audio")
+        try:
+            p = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error",
+                 "-i", "pipe:0", "-f", "s16le", "-acodec", "pcm_s16le",
+                 "-ar", str(sample_rate), "-ac", "1", "pipe:1"],
+                input=mp3, capture_output=True, check=True,
+            )
+        except FileNotFoundError as e:
+            raise ErrorProveedor(f"{self.nombre}: falta ffmpeg en el servidor") from e
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode(errors="replace").strip()[:300]
+            raise ErrorProveedor(f"{self.nombre}: ffmpeg fallo: {err}") from e
+        return p.stdout
+
+
 REGISTRO_TTS = {
     "macos": TTSMacOS,
+    "edge": TTSEdge,
     "piper": TTSPiper,
     "polly": TTSPolly,
     "openai-compatible": TTSOpenAICompatible,

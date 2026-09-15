@@ -68,9 +68,23 @@ router_dep = [Depends(_requiere_token)]
 #  Estado general
 # ================================================================
 @app.get("/api/salud")
-def salud():
-    """Sin auth: para que nginx/systemd puedan comprobar que el proceso vive."""
-    return {"ok": True}
+async def salud():
+    """Sin auth: para que nginx/systemd puedan comprobar que el proceso vive.
+
+    Ola 8 (operacion): ademas del liveness basico de ESTE proceso (el panel),
+    intenta pedirle al puente de voz (otro proceso, websocket_bridge.py) su
+    propio estado -- uptime, memoria, dispositivos vivos, contadores de
+    turnos de voz (comando de control 'salud'). Si el puente no responde
+    (caido, reiniciando), el health check del panel NO debe fallar por eso:
+    se degrada a "puente": {"error": ...} en vez de tumbar la respuesta.
+    """
+    base = {"ok": True}
+    try:
+        v = await _control_llama("salud", {}, timeout=2)
+        base["puente"] = v if isinstance(v, dict) else {"error": str(v)}
+    except Exception as e:
+        base["puente"] = {"error": str(e)}
+    return base
 
 
 @app.get("/api/estado", dependencies=router_dep)
@@ -522,6 +536,19 @@ async def dispositivos_listar():
     return {"ok": True, "dispositivos": v}
 
 
+@app.get("/api/feeds", dependencies=router_dep)
+async def feeds_resumen():
+    """Historial reciente de chat (tu/ia), noticias y specs de Mac -- el
+    mismo contenido que ya ven las pantallas CHAT/SENALES/MAQUINA del Stick,
+    para poder verlo tambien desde el navegador (pedido explicito del
+    usuario, 13/sep/2026). Cachés globales del puente, no de un dispositivo
+    concreto -- ver 'resumen_feeds' en websocket_bridge.py."""
+    v = await _control_llama("resumen_feeds", {})
+    if not isinstance(v, dict):
+        return {"error": str(v), "chat": [], "noticias": [], "mac": []}
+    return v
+
+
 @app.get("/api/dispositivo/estado", dependencies=router_dep)
 async def dispositivo_estado(device_id: Optional[str] = None):
     """Estado REAL de la placa, no lo ultimo que el panel le mando.
@@ -551,11 +578,19 @@ class WifiIn(BaseModel):
 
 
 @app.post("/api/dispositivo/wifi", dependencies=router_dep)
-async def dispositivo_wifi(body: WifiIn):
+async def dispositivo_wifi(body: WifiIn, device_id: Optional[str] = None):
     """Guarda o borra una red WiFi en la memoria del ESP32.
 
     Tiene efecto en el proximo arranque, no al instante: cambiar de red en
     caliente cortaria la conexion por la que llego la orden.
+
+    BUG REAL (13/sep/2026): este endpoint no aceptaba device_id -- siempre
+    apuntaba a lo que REGISTRO.obtener(None) resolviera (la bola si esta
+    viva; si no, el unico canal vivo). Con un solo dispositivo conectado a
+    la vez no se notaba, pero con la bola Y el Stick conectados a la vez el
+    formulario del Stick habria tocado la bola en silencio. Ahora, si se pasa
+    device_id (?device_id=... en la URL, como el resto de estos endpoints),
+    va a ESE dispositivo si o si.
 
     AVISO DE SEGURIDAD: la contrasena viaja del navegador al panel y de ahi al
     dispositivo. Mientras el panel se sirva por HTTP sin TLS, ese trayecto va
@@ -564,6 +599,8 @@ async def dispositivo_wifi(body: WifiIn):
     """
     args = {"accion": body.accion, "ssid": body.ssid.strip(),
             "password": body.password}
+    if device_id:
+        args["device_id"] = device_id
     if not args["ssid"]:
         raise HTTPException(400, "hace falta el nombre de la red")
     v = await _control_llama("wifi", args)
@@ -606,6 +643,151 @@ async def dispositivo_reiniciar(device_id: Optional[str] = None):
     if isinstance(v, dict) and v.get("error"):
         raise HTTPException(400, v["error"])
     return {"ok": True, "resultado": v}
+
+
+# ================================================================
+#  Ola ritmo, Fase 2 (tasks.md): "Panel web: ver el plan del día,
+#  reordenar, cambiar modo y duración". Mismo patron de cliente de
+#  control que dispositivo/*: llama a RITMO via websocket_bridge.py, nunca
+#  toca RITMO directo (vive en el proceso del puente, no en este).
+# ================================================================
+class BloqueIn(BaseModel):
+    id: Optional[str] = None
+    titulo: str
+    modo: str = "multitarea"
+    duracion_min: Optional[int] = None
+    via: Optional[str] = None
+    anclado: Optional[bool] = None
+    inicio_previsto: Optional[float] = None
+
+
+class PlanIn(BaseModel):
+    bloques: list[BloqueIn]
+
+
+@app.get("/api/ritmo", dependencies=router_dep)
+async def ritmo_estado():
+    """Bloque activo, siguiente, si espera confirmacion y vias frias --
+    para la vista de panel del plan del dia."""
+    v = await _control_llama("ritmo_estado", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+@app.get("/api/ritmo/plan", dependencies=router_dep)
+async def ritmo_plan_leer():
+    v = await _control_llama("ritmo_plan", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+@app.put("/api/ritmo/plan", dependencies=router_dep)
+async def ritmo_plan_reemplazar(body: PlanIn):
+    """Reemplaza el plan completo -- es como el panel aplica reordenar o
+    cambiar modo/duracion: el frontend manda la lista ya editada entera,
+    no un parche por bloque (mismo patron simple que ajustes.pantallas).
+    NUNCA toca el bloque activo (RF-9), eso lo garantiza RITMO.plan_set()."""
+    bloques = [b.dict(exclude_none=True) for b in body.bloques]
+    v = await _control_llama("ritmo_plan", {"bloques": bloques})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+@app.post("/api/ritmo/empieza", dependencies=router_dep)
+async def ritmo_empieza(bloque_id: Optional[str] = None):
+    """Boton 'empezar' del panel para un bloque del plan, o confirmar el
+    que ya estaba esperando (RF-14) si no se pasa bloque_id."""
+    if bloque_id:
+        v = await _control_llama("ritmo_empieza", {"bloque_id": bloque_id})
+    else:
+        v = await _control_llama("ritmo_confirma", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+@app.post("/api/ritmo/cierra", dependencies=router_dep)
+async def ritmo_cierra():
+    v = await _control_llama("ritmo_cierra", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+class DesglosaIn(BaseModel):
+    tarea: str
+    picante: int = 1
+
+
+@app.post("/api/ritmo/desglosa", dependencies=router_dep)
+async def ritmo_desglosa_panel(body: DesglosaIn):
+    """RF-19: 'Magic ToDo' propio -- desde el panel, sin pasar por voz,
+    para cuando ver la tarea desglosada en pantalla es justo el empujón
+    que hace falta (docs/investigacion/estado-del-arte-tdah-2026-
+    actualizacion.md §2.3)."""
+    v = await _control_llama("ritmo_desglosa", {"tarea": body.tarea, "picante": body.picante},
+                              timeout=30)
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
+
+
+# ================================================================
+#  Ola agenda (RF-1: ingesta por empuje). Este endpoint NO habla con el
+#  bridge -- nucleo/agenda.py escribe agenda.json directo, sin pasar por
+#  RITMO (que vive en el proceso del bridge). La proxima vez que
+#  plan_del_dia() corra (siguiente 'hola' de la mañana, o quien llame a
+#  POST /api/ritmo/plan con el plan recalculado) recoge lo nuevo.
+#  RF-4: 'dependencies=router_dep' es el MISMO PANEL_TOKEN que protege todo
+#  lo demas -- no se inventa un segundo mecanismo de auth para el Atajo.
+# ================================================================
+class EventoAgendaIn(BaseModel):
+    inicio: str
+    fin: str
+    titulo: str
+    calendario: str
+    organizador: Optional[bool] = True
+    modo: Optional[str] = None
+
+
+class AgendaIn(BaseModel):
+    eventos: list[EventoAgendaIn]
+
+
+@app.post("/api/agenda", dependencies=router_dep)
+async def agenda_recibe(body: AgendaIn):
+    """RF-1/RF-4: el Atajo (o cualquier cliente autenticado) empuja los
+    eventos del dia. Validacion y guardado completos en nucleo/agenda.py --
+    aqui solo se traduce la excepcion a un 400 con el motivo (RF-4,
+    criterio 3: rechazar sin modificar nada)."""
+    from nucleo import agenda as _agenda
+    eventos = [e.dict() for e in body.eventos]
+    try:
+        return await asyncio.to_thread(_agenda.guarda, eventos)
+    except _agenda.AgendaInvalida as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/agenda", dependencies=router_dep)
+async def agenda_lee():
+    """Para depurar el Atajo sin adivinar a ciegas, y para que el panel
+    muestre la frescura (D-3)."""
+    from nucleo import agenda as _agenda
+    return await asyncio.to_thread(_agenda.snapshot)
+
+
+@app.get("/api/consumo", dependencies=router_dep)
+async def consumo():
+    """Ola 8: consumo de proveedores por dispositivo -- turnos ok/error/
+    ruido de cada device_id, mas que proveedor esta activo ahora en cada
+    cadena (llm/stt/tts)."""
+    v = await _control_llama("consumo", {})
+    if isinstance(v, dict) and v.get("error"):
+        raise HTTPException(400, v["error"])
+    return v
 
 
 # ================================================================

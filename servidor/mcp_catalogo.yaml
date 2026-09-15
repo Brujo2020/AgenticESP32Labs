@@ -121,3 +121,23 @@ vigia:
   command: ["python3", "mcps/vigia.py"]
   env: { HUD_BRIDGE: "ws://127.0.0.1:8765", VIGIA_REPO: "${VIGIA_REPO}" }
   requisitos: "El puente corriendo y un repositorio git en VIGIA_REPO"
+
+foco:
+  categoria: propio
+  descripcion: "SuperPower -- detecta HyperFocus/disperso/descanso/ausente y decide si un aviso pasa ahora o se guarda (mcps/foco.py, nucleo/foco.py)"
+  command: ["python3", "mcps/foco.py"]
+  env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+  requisitos: "El puente websocket_bridge.py corriendo (el MOTOR vive ahi, no en este proceso)"
+
+ritmo:
+  categoria: propio
+  descripcion: "Copiloto de jornada -- planifica el dia en bloques por modo, ofrece extender solo en HyperFocus, avisa antes de cerrar y detecta vias frias (mcps/ritmo.py, nucleo/ritmo.py). Ver .kiro/specs/ritmo/"
+  command: ["python3", "mcps/ritmo.py"]
+  env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+  requisitos: "El puente websocket_bridge.py corriendo (RITMO vive ahi, no en este proceso)"
+
+jornada:
+  categoria: propio
+  descripcion: "El parte del dia: pendientes + clima + tendencias en un solo barrido, sin correo (MISION.md 2a)"
+  command: ["python3", "mcps/jornada.py"]
+  env_dir: "."

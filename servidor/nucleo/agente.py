@@ -153,6 +153,20 @@ class Agente:
                 except json.JSONDecodeError:
                     args = {}
                 log.info("herramienta %s(%s)", fn, args)
+                # Señal de actividad para SuperPower (nucleo/foco.py): cada
+                # herramienta que el agente ejecuta de verdad es evidencia de
+                # que hay una persona activa, y en QUE esta activa (el nombre
+                # de la tool hace de "app"). Es una señal aproximada -- la
+                # señal fina, por cambios de ventana en el PC, es un MCP aparte
+                # que todavia no existe (MISION.md, fuera de alcance) -- pero
+                # es real y ya disponible hoy, sin infraestructura nueva.
+                # Nunca entra el contenido de 'args': solo el nombre de la
+                # tool. Ver la nota de privacidad en foco.py.
+                try:
+                    from nucleo.foco import MOTOR
+                    MOTOR.latido(fn)
+                except Exception:
+                    pass  # SuperPower es una mejora, nunca puede tumbar al agente
                 resultado = await self.mcp_pool.invoca(fn, args)
                 mensajes.append({
                     "role": "tool",

@@ -8,26 +8,50 @@ Converse API), asi que va en una clase aparte (ver LLMBedrock) que traduce
 mensajes/herramientas en ambas direcciones para que agente.py no tenga que
 saber que el proveedor activo cambio.
 """
-import asyncio, os, json, re, httpx
+import asyncio, os, json, re, uuid, httpx
 from .base import ProveedorLLM, ErrorProveedor
 
 
 def _expande(valor: str) -> str:
-    """Permite escribir ${VARIABLE} en config.yaml."""
-    if isinstance(valor, str) and valor.startswith("${") and valor.endswith("}"):
-        return os.getenv(valor[2:-1], "")
-    return valor
+    """Permite escribir ${VARIABLE} o ${VARIABLE:-defecto} en config.yaml
+    (sintaxis estilo bash). BUG REAL (13/sep/2026, desplegando en
+    Lightsail): 'base_url' nunca pasaba por esta funcion -- solo 'api_key' --
+    asi que "${OPENCODE_BASE_URL:-https://opencode.ai/zen/v1}" se usaba tal
+    cual, literal, con llaves y todo, y httpx fallaba con
+    'Request URL is missing an http/https protocol' por mucho que la
+    variable de entorno estuviera puesta. Ademas esta funcion tampoco
+    entendia el ':-defecto': buscaba una variable literalmente llamada
+    'OPENCODE_BASE_URL:-https://...' (que nunca existe) en vez de
+    'OPENCODE_BASE_URL' con ese valor de respaldo. Los dos bugs juntos
+    hacian que base_url SIEMPRE quedara vacio para cualquier proveedor que
+    usara el patron ':-defecto', no solo OpenCode."""
+    if not (isinstance(valor, str) and valor.startswith("${") and valor.endswith("}")):
+        return valor
+    contenido = valor[2:-1]
+    if ":-" in contenido:
+        nombre_var, defecto = contenido.split(":-", 1)
+        return os.getenv(nombre_var, defecto)
+    return os.getenv(contenido, "")
 
 
 class LLMCompatibleOpenAI(ProveedorLLM):
     def __init__(self, nombre: str, cfg: dict):
         self.nombre = nombre
-        self.base_url = cfg["base_url"].rstrip("/")
+        self.base_url = _expande(cfg["base_url"]).rstrip("/")
         self.model = cfg["model"]
         self.api_key = _expande(cfg.get("api_key", "")) or "no-necesaria"
         self.temperature = cfg.get("temperature", 0.7)
         self.max_tokens = cfg.get("max_tokens", 2048)
         self.timeout = cfg.get("timeout", 60)
+        # OpenCode Go exige una cabecera 'x-opencode-session' para poder
+        # enrutar la peticion (400 'MissingSessionID' confirmado en vivo,
+        # 13/sep/2026 -- ver https://opencode.ai/docs/go/#where-can-i-use-it).
+        # No es sesion de CONVERSACION (no hay que reiniciarla por turno):
+        # basta un id estable por proceso para que el enrutador de OpenCode
+        # tenga a que "pegar" las peticiones. Otros backends openai-
+        # compatible (Groq, NVIDIA, etc.) la ignoran sin problema si llega,
+        # asi que no hace falta acotarla solo a Go por nombre de proveedor.
+        self._sesion_id = str(uuid.uuid4())
 
     def disponible(self) -> bool:
         # Los locales no necesitan clave; los remotos si
@@ -51,7 +75,10 @@ class LLMCompatibleOpenAI(ProveedorLLM):
         async with httpx.AsyncClient(timeout=self.timeout) as c:
             return await c.post(
                 f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "x-opencode-session": self._sesion_id,
+                },
                 json=cuerpo,
             )
 

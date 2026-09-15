@@ -18,6 +18,15 @@ FUENTES = [
     "https://hnrss.org/newest?q=AI+OR+LLM&count=10",
     "https://techcrunch.com/category/artificial-intelligence/feed/",
     "https://www.artificialintelligence-news.com/feed/",
+
+    # cerebro-jornada (MISION.md §2d, "radar de tendencias"): las cuatro
+    # areas que le interesan a Mario dia a dia, no solo IA generica. Mismo
+    # truco de Google News RSS por busqueda -- no depende de que el sitio
+    # tenga su propio feed, y ya probo ser el formato mas confiable de esta
+    # lista (nota de la demo, arriba).
+    "https://news.google.com/rss/search?q=%223D+generativo%22+OR+%22AI+3D%22&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Unity+game+engine&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=%22modelo+chino%22+open+source+IA+OR+%22Qwen%22+OR+%22DeepSeek%22&hl=es-419&gl=CL&ceid=CL:es",
 ]
 
 ANCHO = 33          # caracteres que caben en una linea del HUD

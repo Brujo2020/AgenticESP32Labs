@@ -28,7 +28,18 @@ LIMITES = {"vistas_max": 8, "filas_max": 6, "ancho": 26}
 # canal los quiere todos (comportamiento historico, previo a la ola 2). Un
 # handshake v2.1 con 'servicios' explicito lo estrecha -- tipicamente el
 # Stick, que solo pide 'alertas' porque es de bolsillo (design.md ola 2).
-SERVICIOS = {"noticias", "telemetria", "alertas"}
+#
+# 'clima' (15/sep/2026, pedido explicito del usuario): antes el clima solo
+# se conseguia preguntandolo por voz (mcps/clima.py, bajo demanda). Ahora
+# tambien se difunde solo, como 'noticias' -- ver difunde_clima() en
+# websocket_bridge.py. Un dispositivo que ya declaraba 'servicios' antes de
+# hoy (el Stick, con solo ["alertas"]) NO gana 'clima' automaticamente: tiene
+# que declararlo el mismo dia que actualice su firmware, ley 1 de siempre.
+# 'ritmo' (15/sep/2026, ola ritmo -- copiloto de jornada): igual que 'clima',
+# el Stick con ['alertas'] no lo gana solo con este commit, tiene que
+# declararlo cuando actualice su firmware (ley 1). Ver
+# .kiro/specs/ritmo/tasks.md Fase 1 y websocket_bridge.py:vigila_ritmo().
+SERVICIOS = {"noticias", "telemetria", "alertas", "clima", "ritmo"}
 
 # Tipos de entrada validos en el campo 'entrada' del hola v2.1.
 ENTRADAS = {"tactil", "botones"}

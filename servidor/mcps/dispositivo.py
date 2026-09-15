@@ -276,10 +276,13 @@ async def hud_reiniciar() -> str:
 
 @mcp.tool()
 async def dispositivo_estado() -> str:
-    """Estado del ESP32: conexion, firmware, WiFi, memoria libre y vistas activas.
+    """Estado del ESP32: conexion, firmware, geometria, entrada, servicios,
+    WiFi, memoria libre, vistas activas y el ULTIMO EVENTO (que fila se toco
+    y en que dispositivo -- ola 2, protocolo v2.1).
 
     Util antes de crear vistas (para saber cuantas caben) o para diagnosticar
-    por que el usuario no esta viendo lo que crees que le mandaste.
+    por que el usuario no esta viendo lo que crees que le mandaste, o para
+    responder "en el dispositivo donde se toco" cuando hay mas de un cuerpo.
     """
     r = await _llama("estado", {})
     return json.dumps(r, ensure_ascii=False, indent=2) if isinstance(r, dict) else r

@@ -19,12 +19,17 @@ proveedores:
   # NOTA: Transcribe/Polly (AWS STT/TTS) causaban un crash-loop no resuelto
   # ('cancel scope' de anyio) y se sacaron de la cadena a proposito -- ver
   # historial de commits. No reactivar sin investigar esa causa primero.
-  llm: [bedrock, groq]
+  # Solo 'opencode-go': la cuenta de Mario tiene 'opencode-zen' sin saldo
+  # (401 CreditsError confirmado en vivo, 13/sep/2026) -- dejarlo en la
+  # cadena solo anade una llamada fallida y un segundo de retraso en CADA
+  # turno, sin ningun beneficio. Si algun dia recarga saldo en Zen, se
+  # puede reponer aqui.
+  llm: [opencode-go]
   # Transcribe primero: mismo credito/cuenta AWS que Bedrock y Polly, y saca
   # a Groq de la duda mientras se confirma si el problema de reconocimiento
   # era el proveedor o el audio de origen. Groq queda de respaldo (gratis,
   # rapido) y mlx-whisper local al final (sin red, sin coste).
-  stt: [groq]
+  stt: [faster-whisper]
   # POLLY PRIMERO: voz neuronal en espanol de verdad (Lucia, es-ES), en la
   # misma nube que ya factura Bedrock, sin depender de que el .onnx de Piper
   # este bien descargado en el servidor. Piper queda de respaldo local (sin
@@ -35,7 +40,7 @@ proveedores:
   #
   # OJO: 'macos' NUNCA sirve de respaldo real en este servidor -- usa el
   # comando "say", que solo existe en macOS, y el servidor corre Ubuntu.
-  tts: [piper, groq, macos]
+  tts: [edge, piper]
 
 # ------------------------------------------------------------
 #  Catalogo: todo lo soportado. Estar aqui no significa estar activo,
@@ -45,6 +50,36 @@ proveedores:
 catalogo:
 
   llm:
+    opencode-zen:              # OpenCode Zen — LLM por defecto de AsistenteS3
+      backend: "openai-compatible"
+      base_url: "${OPENCODE_BASE_URL:-https://opencode.ai/zen/v1}"
+      model: "deepseek-v4-flash"
+      api_key: "${OPENCODE_ZEN_API_KEY}"
+      description: "OpenCode Zen — perfil ticker/noticias, rapido y barato"
+
+    opencode-go:               # OpenCode Go — respaldo/dialogo mas capaz
+      backend: "openai-compatible"
+      # BUG REAL (13/sep/2026): compartia el mismo base_url que opencode-zen
+      # ("/zen/v1"), y OpenCode devolvia 401 "Insufficient balance" -- no
+      # era saldo (la cuenta de Mario tenia uso disponible), era que Go
+      # necesita su propia ruta ("/zen/go/v1"), confirmado en el panel de
+      # opencode.ai ("Selecciona 'OpenCode Go' como proveedor..."). El
+      # 'OPENCODE_GO_BASE_URL' es una variable nueva, distinta de la que usa
+      # opencode-zen, para que un despliegue pueda pisar cualquiera de las
+      # dos sin afectar a la otra.
+      base_url: "${OPENCODE_GO_BASE_URL:-https://opencode.ai/zen/go/v1}"
+      # glm-5.3 alucinaba el formato de tool-calling (mandaba {"args":...,
+      # "kwargs":...} en vez de los parametros reales del schema, 13/sep/2026
+      # -- ver 'tool clima_ubicacion fallo' en el historial). deepseek-v4-
+      # flash: misma familia DeepSeek-V3/V4, conocida por tool-calling mas
+      # apegado al schema JSON. Si vuelve a alucinar formato, probar
+      # qwen3.7-max antes de volver a GLM.
+      # deepseek-v4.1-flash (con el .1): confirmado por Mario contra la doc
+      # oficial (opencode.ai/docs/es/go/), no deepseek-v4-flash a secas.
+      model: "deepseek-v4.1-flash"
+      api_key: "${OPENCODE_GO_API_KEY}"
+      description: "OpenCode Go — perfil dialogo/agentes"
+
     bedrock:                  # AWS · pagado con el credito gratis de la cuenta
       backend: "bedrock"
       # Claude 3.5 Haiku llego a fin de vida en Bedrock (19 jun 2026) --
@@ -117,6 +152,16 @@ catalogo:
       description: "Anthropic directo — mejor razonamiento"
 
   stt:
+    faster-whisper:            # LOCAL · offline, sin coste, sin API key
+      backend: "faster-whisper"
+      # 'base' int8: entra en los 4 GB del Lightsail junto al resto del
+      # stack (ver server/README.md, seccion RAM). Subir a 'small' si el
+      # servidor tiene mas margen -- mejora precision, casi triplica RSS.
+      model: "base"
+      compute_type: "int8"
+      beam_size: 1
+      description: "faster-whisper local (CPU, int8) — capta 100% offline"
+
     transcribe:               # AWS · mismo credito que Bedrock/Polly
       backend: "transcribe"
       region: "us-east-1"
@@ -146,6 +191,11 @@ catalogo:
       api_key: "${OPENAI_API_KEY}"
 
   tts:
+    edge:                      # ONLINE · gratis, sin API key (Microsoft Edge)
+      backend: "edge"
+      voice: "es-ES-ElviraNeural"
+      description: "Microsoft EdgeTTS es-ES — TTS por defecto de AsistenteS3"
+
     polly:                    # AWS · mismo credito que Bedrock
       backend: "polly"
       voice: "Lucia"          # es-ES neuronal. Alternativas: Conchita/Enrique (standard)
@@ -251,6 +301,42 @@ mcp_servers:
     command: ["python3", "mcps/consulta.py"]
     env: { PYTHONPATH: "." }
 
+  # Mismo bug que el comentario de arriba describe para dispositivo/vigia:
+  # 'foco' y 'jornada' ya estaban en tools_to_enable (15/sep/2026) pero
+  # faltaban aqui -- se habrian quedado activandose en falso, sin arrancar.
+  foco:
+    type: "subprocess"
+    command: ["python3", "mcps/foco.py"]
+    env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+
+  jornada:
+    type: "subprocess"
+    command: ["python3", "mcps/jornada.py"]
+    env: { PYTHONPATH: "." }
+
+  # SuperPower (nucleo/foco.py) como herramienta: consultar el estado de
+  # HyperFocus/dispersion, pedir un descanso deliberado, reanudar y dejar
+  # migas de pan. Ver .kiro/specs/superpower/.
+  foco:
+    type: "subprocess"
+    command: ["python3", "mcps/foco.py"]
+    env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+
+  # cerebro-jornada (MISION.md §2a): el parte del dia y los pendientes.
+  # Sin HUD_BRIDGE: no habla con el puente, solo HTTP y un fichero local.
+  jornada:
+    type: "subprocess"
+    command: ["python3", "mcps/jornada.py"]
+
+  # Ritmo (15/sep/2026): el copiloto de jornada -- bloques por modo,
+  # extension solo en HyperFocus, vias frias. Registrado aqui, en
+  # mcp_catalogo.yaml Y en tools_to_enable (los tres, mismo lugar donde
+  # foco/jornada se quedaron a medias antes -- ver el comentario de arriba).
+  ritmo:
+    type: "subprocess"
+    command: ["python3", "mcps/ritmo.py"]
+    env: { HUD_BRIDGE: "ws://127.0.0.1:8765" }
+
 tools_to_enable:
   - clima
   - sistema
@@ -258,6 +344,9 @@ tools_to_enable:
   - dispositivo
   - vigia
   - consulta
+  - foco
+  - jornada
+  - ritmo
   # Memoria persistente entre conversaciones (npx, sin API key):
   # el asistente recuerda lo que le contaste en sesiones anteriores.
   - memoria

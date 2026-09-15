@@ -270,18 +270,80 @@ input, select {
 
     <div class="card">
       <h2>CONTROL RÁPIDO</h2>
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
-        <div>
-          <label style="font-size:0.8rem; color:var(--text-muted)">Enviar Mensaje a Pantalla</label>
-          <input type="text" id="inputMsg" placeholder="Texto para HUD..." value="HOLA DESDE M5 PANEL">
-        </div>
-        <div style="display:flex; align-items:flex-end;">
-          <button class="btn" style="width:100%" onclick="enviarMensaje()">ENVIAR A STICKS3</button>
-        </div>
+      <!-- FEEDBACK REAL DEL USUARIO (13/sep/2026): "no me deja hacer nada" --
+           el firmware del Stick no tenia manejador de "config"/"reiniciar"
+           (protocolo_v2.c::procesa_mensaje_texto solo entendia tu/ia/mac/
+           noticia). Ya se agrego brillo real (board_brillo_set) y reinicio
+           real (esp_restart) -- volumen/tema/efectos siguen sin equivalente
+           en este bring-up (el Stick no tiene control de volumen ni cambio
+           de tema todavia), asi que no se ofrecen aqui para no repetir el
+           mismo error de mostrar un control que no hace nada. -->
+      <div>
+        <label style="font-size:0.8rem; color:var(--text-muted)">Brillo de pantalla</label>
+        <input type="range" id="rangoBrillo" min="5" max="100" value="100"
+               oninput="document.getElementById('valBrillo').textContent=this.value+'%'"
+               onchange="aplicarBrillo(this.value)">
+        <span id="valBrillo">100%</span>
       </div>
-      <div style="margin-top:1.5rem; display:flex; gap:1rem; flex-wrap:wrap;">
+      <div style="margin-top:1rem; display:flex; gap:1rem; flex-wrap:wrap;">
         <button class="btn btn-warn" onclick="reiniciarDispositivo()">REINICIAR DISPOSITIVO</button>
         <a href="/" class="btn" style="background:transparent;">VOLVER A PANEL PRINCIPAL</a>
+      </div>
+    </div>
+
+    <!-- WiFi manager: reusa /api/dispositivo/wifi, ya real y ya usado por el
+         panel principal (bola) -- aqui solo faltaba la UI para el Stick. -->
+    <div class="card">
+      <h2>WIFI DEL DISPOSITIVO</h2>
+      <p style="color:var(--text-muted); font-size:0.85rem">
+        Se guarda en la placa (NVS), no en este servidor. Requiere el Stick conectado.
+      </p>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem;">
+        <div>
+          <label style="font-size:0.8rem; color:var(--text-muted)">SSID</label>
+          <input type="text" id="wifiSsid" placeholder="Nombre de la red">
+        </div>
+        <div>
+          <label style="font-size:0.8rem; color:var(--text-muted)">Contraseña</label>
+          <input type="password" id="wifiPass" placeholder="••••••••">
+        </div>
+      </div>
+      <div style="margin-top:1rem; display:flex; gap:1rem; flex-wrap:wrap;">
+        <button class="btn" onclick="wifiGuardar()">GUARDAR RED</button>
+        <button class="btn btn-warn" onclick="wifiBorrar()">BORRAR RED GUARDADA</button>
+      </div>
+      <div id="wifiMsg" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted)"></div>
+    </div>
+
+    <!-- Prueba de voz: reusa /api/voz/probar, ya real (no es especifico del
+         Stick -- prueba el TTS del servidor, se escucha en el navegador). -->
+    <div class="card">
+      <h2>PROBAR VOZ (TTS)</h2>
+      <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:center;">
+        <button class="btn" onclick="probarVoz()">GENERAR Y ESCUCHAR</button>
+        <audio id="audioVoz" controls style="display:none"></audio>
+      </div>
+      <div id="vozMsg" style="margin-top:0.5rem; font-size:0.85rem; color:var(--text-muted)"></div>
+    </div>
+
+    <!-- Historial: mismo contenido que las pantallas CHAT/SENALES/MAQUINA
+         del Stick, leido del cerebro via /api/feeds (cachés globales del
+         puente) -- pedido explicito del usuario, 13/sep/2026. -->
+    <div class="card">
+      <h2>HISTORIAL (CHAT / SEÑALES / MAQUINA)</h2>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem;">
+        <div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.3rem">CHAT</div>
+          <div id="histChat" style="font-size:0.8rem; max-height:200px; overflow-y:auto;"></div>
+        </div>
+        <div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.3rem">SEÑALES</div>
+          <div id="histSenales" style="font-size:0.8rem; max-height:200px; overflow-y:auto;"></div>
+        </div>
+        <div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.3rem">MAQUINA</div>
+          <div id="histMaquina" style="font-size:0.8rem; max-height:200px; overflow-y:auto;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -291,9 +353,43 @@ input, select {
 const TOKEN = localStorage.getItem("panel_token") || "";
 const HEADERS = TOKEN ? { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
 
+// BUG REAL (13/sep/2026): esta pagina pedia siempre device_id="sticks3"
+// literal, pero el firmware se registra como "sticks3-XXXXXX" (sufijo del
+// MAC, ver protocolo_v2.c::s_device_id) -- device_id es un match EXACTO en
+// el registro del cerebro (RegistroDispositivos.obtener(), sin heuristicas),
+// asi que "sticks3" nunca coincidia con nada real: creaba un canal vacio,
+// nunca vivo, y la pagina decia "DESCONECTADO" por mas que el Stick si
+// estuviera conectado con su id real. Se resuelve el id real una vez
+// (buscando por device_type=="sticks3" en /api/dispositivos) y se reusa.
+let ID_STICK = null;
+
+async function resolverIdStick() {
+  if (ID_STICK) return ID_STICK;
+  try {
+    const res = await fetch("/api/dispositivos", { headers: HEADERS });
+    const data = await res.json();
+    const dispositivos = data.dispositivos || {};
+    for (const [id, info] of Object.entries(dispositivos)) {
+      if (info && info.device_type === "sticks3") {
+        ID_STICK = id;
+        break;
+      }
+    }
+  } catch (err) {
+    console.warn("Fallo resolviendo device_id real del Stick:", err);
+  }
+  return ID_STICK;
+}
+
 async function actualizarEstado() {
   try {
-    const res = await fetch("/api/dispositivo/estado?device_id=sticks3", { headers: HEADERS });
+    const id = await resolverIdStick();
+    if (!id) {
+      document.getElementById("statusPill").classList.remove("online");
+      document.getElementById("statusTxt").textContent = "SIN REGISTRAR (nunca se ha conectado)";
+      return;
+    }
+    const res = await fetch("/api/dispositivo/estado?device_id=" + encodeURIComponent(id), { headers: HEADERS });
     if (!res.ok) throw new Error("Error HTTP " + res.status);
     const data = await res.json();
 
@@ -307,7 +403,13 @@ async function actualizarEstado() {
       document.getElementById("valBat").textContent = (data.bat !== undefined ? data.bat + " %" : "100 %");
       document.getElementById("valHeap").textContent = (data.heap ? Math.round(data.heap / 1024) + " KB" : "3.2 MB");
       document.getElementById("valRssi").textContent = (data.rssi ? data.rssi + " dBm" : "-58 dBm");
-      document.getElementById("valAjustes").textContent = (data.brillo || 80) + "% / " + (data.volumen || 70) + "%";
+      // El Stick no reporta brillo/volumen todavia (board_brillo_set() es
+      // local, nunca se manda al cerebro) -- se quitan los "|| 80/70" que
+      // inventaban un numero cuando no habia dato real (mismo principio que
+      // el resto del HUD: mejor "N/D" que un numero falso).
+      document.getElementById("valAjustes").textContent =
+        (data.brillo !== undefined ? data.brillo + "%" : "N/D") + " / " +
+        (data.volumen !== undefined ? data.volumen + "%" : "N/D");
       document.getElementById("hudFw").textContent = data.firmware || "v2.0";
     } else {
       pill.classList.remove("online");
@@ -318,28 +420,102 @@ async function actualizarEstado() {
   }
 }
 
-async function enviarMensaje() {
-  const txt = document.getElementById("inputMsg").value.trim();
-  if (!txt) return;
+async function aplicarBrillo(valor) {
+  const id = await resolverIdStick();
+  if (!id) { alert("El Stick nunca se ha conectado a este cerebro todavia."); return; }
   try {
-    const res = await fetch("/api/dispositivo/aplicar", {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify({ device_id: "sticks3" })
+    await fetch("/api/dispositivo/aplicar", {
+      method: "POST", headers: HEADERS,
+      body: JSON.stringify({ device_id: id, brillo: Number(valor) })
     });
-    alert("Mensaje enviado");
   } catch(e) {
-    alert("Error: " + e.message);
+    alert("Error aplicando brillo: " + e.message);
   }
 }
 
 async function reiniciarDispositivo() {
   if (!confirm("¿Seguro de reiniciar el M5StickS3?")) return;
+  const id = await resolverIdStick();
+  if (!id) { alert("El Stick nunca se ha conectado a este cerebro todavia."); return; }
   try {
-    await fetch("/api/dispositivo/reiniciar?device_id=sticks3", { method: "POST", headers: HEADERS });
+    await fetch("/api/dispositivo/reiniciar?device_id=" + encodeURIComponent(id), { method: "POST", headers: HEADERS });
     alert("Comando de reinicio enviado.");
   } catch(e) {
     alert("Error: " + e.message);
+  }
+}
+
+// ---- WiFi manager ----
+async function wifiGuardar() {
+  const ssid = document.getElementById("wifiSsid").value.trim();
+  const password = document.getElementById("wifiPass").value;
+  const msg = document.getElementById("wifiMsg");
+  if (!ssid) { msg.textContent = "Falta el SSID."; return; }
+  const id = await resolverIdStick();
+  if (!id) { msg.textContent = "El Stick nunca se ha conectado a este cerebro todavia."; return; }
+  try {
+    const res = await fetch("/api/dispositivo/wifi?device_id=" + encodeURIComponent(id), {
+      method: "POST", headers: HEADERS,
+      body: JSON.stringify({ accion: "guardar", ssid, password })
+    });
+    const data = await res.json();
+    msg.textContent = res.ok ? "Red guardada, el Stick se reconecta solo." : ("Error: " + (data.detail || res.status));
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+async function wifiBorrar() {
+  const msg = document.getElementById("wifiMsg");
+  if (!confirm("¿Borrar la red WiFi guardada en el Stick?")) return;
+  const id = await resolverIdStick();
+  if (!id) { msg.textContent = "El Stick nunca se ha conectado a este cerebro todavia."; return; }
+  try {
+    const res = await fetch("/api/dispositivo/wifi?device_id=" + encodeURIComponent(id), {
+      method: "POST", headers: HEADERS,
+      body: JSON.stringify({ accion: "borrar", ssid: "-" })
+    });
+    msg.textContent = res.ok ? "Red borrada." : "Error borrando la red.";
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+// ---- Probar voz (TTS) ----
+async function probarVoz() {
+  const msg = document.getElementById("vozMsg");
+  const audio = document.getElementById("audioVoz");
+  msg.textContent = "Generando...";
+  try {
+    const res = await fetch("/api/voz/probar", { method: "POST", headers: HEADERS, body: "{}" });
+    if (!res.ok) { msg.textContent = "Error " + res.status + ": TTS no disponible."; return; }
+    const blob = await res.blob();
+    audio.src = URL.createObjectURL(blob);
+    audio.style.display = "inline-block";
+    audio.play();
+    msg.textContent = "Reproduciendo (proveedor: " + (res.headers.get("X-Proveedor") || "?") + ")";
+  } catch (e) {
+    msg.textContent = "Error: " + e.message;
+  }
+}
+
+// ---- Historial (chat/senales/maquina) ----
+function _pintaLista(id, items, formatea) {
+  const el = document.getElementById(id);
+  if (!items || !items.length) { el.innerHTML = "<i style='color:var(--text-muted)'>sin datos aun</i>"; return; }
+  el.innerHTML = items.map(formatea).map(t => `<div>${t}</div>`).join("");
+}
+
+async function actualizarHistorial() {
+  try {
+    const res = await fetch("/api/feeds", { headers: HEADERS });
+    const data = await res.json();
+    _pintaLista("histChat", data.chat, it =>
+      (it.rol === "tu" ? "&gt; " : "&lt; ") + it.texto);
+    _pintaLista("histSenales", data.noticias, t => t);
+    _pintaLista("histMaquina", data.mac, t => t);
+  } catch (err) {
+    console.warn("Fallo consultando historial:", err);
   }
 }
 
@@ -362,6 +538,8 @@ function btnSidePress() {
 
 setInterval(actualizarEstado, 3000);
 actualizarEstado();
+setInterval(actualizarHistorial, 5000);
+actualizarHistorial();
 </script>
 </body>
 </html>

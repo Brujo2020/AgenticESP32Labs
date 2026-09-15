@@ -354,6 +354,7 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
   <button data-vista="pantallas">🖥️ Pantallas</button>
   <button data-vista="apariencia">🎨 Apariencia &amp; Simulador</button>
   <button data-vista="datos">🌤️ Clima &amp; Noticias</button>
+  <button data-vista="ritmo">⏱️ Ritmo</button>
   <button data-vista="agentes">🤖 Agentes</button>
   <button data-vista="claves">🔑 Claves</button>
 </nav>
@@ -370,6 +371,13 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
       <h2>Servicio de voz</h2>
       <div class="sub">Reinicia el bridge websocket_bridge.py (systemd). No reinicia el ESP32.</div>
       <button class="btn" onclick="reiniciarVoz()">↻ Reiniciar servicio de voz</button>
+    </div>
+
+    <div class="tarjeta glass">
+      <h2>Consumo por dispositivo</h2>
+      <div class="sub">Turnos de voz de cada aparato, y qué proveedor atendería ahora mismo cada capacidad (LLM/STT/TTS).</div>
+      <div id="consumo-proveedores" style="margin-bottom:10px">—</div>
+      <div id="consumo-dispositivos"></div>
     </div>
 
     <div class="tarjeta glass" style="border-color:#f59e0b66">
@@ -596,6 +604,57 @@ code{padding:2px 7px;font-size:12px;color:var(--acento3)}
     </div>
   </section>
 
+  <!-- RITMO -->
+  <section id="v-ritmo" class="vista">
+    <div class="tarjeta glass">
+      <h2>Ritmo — bloque activo</h2>
+      <div class="sub">El copiloto de jornada (ola ritmo). Lo que ve el dispositivo ahora mismo.</div>
+      <div id="ritmo-activo">cargando…</div>
+    </div>
+    <div class="tarjeta glass">
+      <h2>Desglosar una tarea</h2>
+      <div class="sub">Cuando algo da parálisis de solo mirarlo: lo parte en pasos concretos (RF-19).</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="desglosa-tarea" placeholder="ej: preparar la propuesta para NTT DATA" style="flex:1;min-width:200px">
+        <select id="desglosa-picante">
+          <option value="0">poco picante (pocos pasos)</option>
+          <option value="1" selected>picante normal</option>
+          <option value="2">muy picante (microsteps)</option>
+        </select>
+        <button class="btn" onclick="desglosarTarea()">Desglosar</button>
+      </div>
+      <div id="desglosa-resultado" style="margin-top:10px"></div>
+    </div>
+
+    <div class="tarjeta glass">
+      <h2>Plan del día</h2>
+      <div class="sub">Se arma solo con lo pendiente al primer saludo del día. Reordena, cambia modo o duración y guarda — nunca toca el bloque ya en curso.</div>
+      <div id="ritmo-plan-lista" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="btn" onclick="ritmoNuevoBloque()">+ Bloque</button>
+        <button class="btn" onclick="guardarRitmoPlan()">Guardar plan</button>
+      </div>
+    </div>
+    <div class="tarjeta glass">
+      <h2>Vías frías</h2>
+      <div class="sub">Temas que llevan varios días sin tocarse (RF-16).</div>
+      <div id="ritmo-vias">—</div>
+    </div>
+    <div class="tarjeta glass">
+      <h2>Agenda</h2>
+      <div class="sub">Bloques anclados que llegan por <code>POST /api/agenda</code> (Atajo del iPhone, cuando exista).</div>
+      <div id="agenda-frescura">—</div>
+      <div class="fila" style="margin-top:10px">
+        <span>Ocultar trabajo del plan</span>
+        <button class="btn chico" id="btn-agenda-trabajo" onclick="toggleAgendaCalendario('ocultar_trabajo','btn-agenda-trabajo')">—</button>
+      </div>
+      <div class="fila">
+        <span>Ocultar personal del plan</span>
+        <button class="btn chico" id="btn-agenda-personal" onclick="toggleAgendaCalendario('ocultar_personal','btn-agenda-personal')">—</button>
+      </div>
+    </div>
+  </section>
+
   <!-- CLAVES -->
   <section id="v-claves" class="vista">
     <div class="tarjeta glass">
@@ -671,6 +730,28 @@ async function cargarEstado(){
     `<div class="fila"><span class="titulo">${cap.toUpperCase()}</span>${pill(!!nombre, nombre || "ninguno disponible")}</div>`
   ).join("");
   document.getElementById("resumen").innerHTML = filas;
+}
+
+async function cargarConsumo(){
+  const provEl = document.getElementById("consumo-proveedores");
+  const disEl = document.getElementById("consumo-dispositivos");
+  if (!provEl || !disEl) return;
+  try {
+    const c = await api("/api/consumo");
+    provEl.innerHTML = Object.entries(c.proveedores_activos || {}).map(([cap, nombre]) =>
+      `<span class="pill ${nombre ? 'ok' : 'err'}" style="margin-right:6px">${cap.toUpperCase()}: ${nombre || 'ninguno'}</span>`
+    ).join("");
+    const porDisp = c.por_dispositivo || {};
+    const ids = Object.keys(porDisp);
+    disEl.innerHTML = ids.length ? ids.map(id => {
+      const d = porDisp[id];
+      return `<div class="fila"><span class="titulo">${id}</span>`
+        + `<span>${d.turnos_ok} ok · ${d.turnos_error} error · ${d.turnos_ruido} ruido</span></div>`;
+    }).join("") : `<div class="sub">todavía sin turnos registrados en este proceso</div>`;
+  } catch (e) {
+    provEl.textContent = "sin conexión con el puente";
+    disEl.innerHTML = "";
+  }
 }
 
 // ---------------- proveedores ----------------
@@ -1337,8 +1418,167 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-function cargarTodo(){
-  cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarAjustes();
+// ---------------- Ritmo (ola ritmo, Fase 2) ----------------
+const RITMO_MODOS = ["material","oferta","investigacion","construccion",
+  "arquitectura","estudio","multitarea","reunion","descanso"];
+let RITMO_PLAN = [];   // copia editable en memoria; se manda entera al guardar
+
+function fmtMin(seg){ return Math.max(0, Math.round(seg/60)) + " min"; }
+
+async function cargarRitmoEstado(){
+  const el = document.getElementById("ritmo-activo");
+  const viasEl = document.getElementById("ritmo-vias");
+  if (!el) return;
+  try {
+    const v = await api("/api/ritmo");
+    if (v.activo) {
+      el.innerHTML = `<b>${v.activo.titulo}</b> — ${v.activo.modo} — quedan ${fmtMin(v.activo.restante_seg)}`
+        + ` <span class="pill ${v.activo.semaforo === 'rojo' ? 'err' : v.activo.semaforo === 'ambar' ? 'warn' : 'ok'}">${v.activo.semaforo}</span>`
+        + ` <button class="btn chico" onclick="ritmoCierra()">Cerrar</button>`;
+    } else if (v.esperando_confirmacion && v.siguiente) {
+      el.innerHTML = `Listo para empezar: <b>${v.siguiente.titulo}</b> `
+        + `<button class="btn chico" onclick="ritmoEmpieza('${v.siguiente.id}')">Empezar</button>`;
+    } else {
+      el.textContent = "sin bloque activo";
+    }
+    const vias = v.vias_frias || [];
+    viasEl.textContent = vias.length
+      ? vias.map(x => `${x.via} (${x.dias} días)`).join(", ")
+      : "ninguna vía fría";
+  } catch (e) {
+    el.textContent = "sin conexión con el puente";
+  }
+}
+
+function pintarRitmoPlan(){
+  const cont = document.getElementById("ritmo-plan-lista");
+  if (!cont) return;
+  cont.innerHTML = "";
+  RITMO_PLAN.forEach((b, i) => {
+    const fila = document.createElement("div");
+    fila.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+    fila.innerHTML = `
+      <input value="${b.titulo || ''}" placeholder="título" style="flex:1;min-width:140px"
+             oninput="RITMO_PLAN[${i}].titulo=this.value">
+      <select onchange="RITMO_PLAN[${i}].modo=this.value">
+        ${RITMO_MODOS.map(m => `<option value="${m}" ${m===b.modo?'selected':''}>${m}</option>`).join("")}
+      </select>
+      <input type="number" min="1" value="${b.duracion_min || ''}" placeholder="min" style="width:70px"
+             oninput="RITMO_PLAN[${i}].duracion_min=parseInt(this.value)||undefined">
+      <button class="btn chico" onclick="ritmoMoverBloque(${i},-1)">↑</button>
+      <button class="btn chico" onclick="ritmoMoverBloque(${i},1)">↓</button>
+      <button class="btn chico" onclick="ritmoBorrarBloque(${i})">✕</button>
+    `;
+    cont.appendChild(fila);
+  });
+}
+
+function ritmoNuevoBloque(){
+  RITMO_PLAN.push({titulo: "", modo: "multitarea"});
+  pintarRitmoPlan();
+}
+function ritmoBorrarBloque(i){ RITMO_PLAN.splice(i,1); pintarRitmoPlan(); }
+function ritmoMoverBloque(i, d){
+  const j = i + d;
+  if (j < 0 || j >= RITMO_PLAN.length) return;
+  [RITMO_PLAN[i], RITMO_PLAN[j]] = [RITMO_PLAN[j], RITMO_PLAN[i]];
+  pintarRitmoPlan();
+}
+
+async function cargarRitmoPlan(){
+  try {
+    const v = await api("/api/ritmo/plan");
+    RITMO_PLAN = (v.plan || []).map(b => ({
+      id: b.id, titulo: b.titulo, modo: b.modo, duracion_min: b.duracion_min,
+      via: b.via, anclado: b.anclado, inicio_previsto: b.inicio_previsto,
+    }));
+    pintarRitmoPlan();
+  } catch (e) { /* sin bridge: deja el plan en memoria como esta */ }
+}
+
+async function guardarRitmoPlan(){
+  const bloques = RITMO_PLAN.filter(b => (b.titulo||"").trim());
+  try {
+    await api("/api/ritmo/plan", {method:"PUT", body: JSON.stringify({bloques})});
+    await cargarRitmoPlan();
+    await cargarRitmoEstado();
+  } catch (e) { alert("no se pudo guardar el plan: " + e.message); }
+}
+
+async function ritmoEmpieza(bloqueId){
+  try {
+    await api("/api/ritmo/empieza" + (bloqueId ? `?bloque_id=${encodeURIComponent(bloqueId)}` : ""), {method:"POST"});
+    await cargarRitmoEstado(); await cargarRitmoPlan();
+  } catch (e) { alert("no se pudo empezar: " + e.message); }
+}
+async function ritmoCierra(){
+  try { await api("/api/ritmo/cierra", {method:"POST"}); await cargarRitmoEstado(); await cargarRitmoPlan(); }
+  catch (e) { alert("no se pudo cerrar: " + e.message); }
+}
+
+async function desglosarTarea(){
+  const tarea = document.getElementById("desglosa-tarea").value.trim();
+  const picante = parseInt(document.getElementById("desglosa-picante").value, 10);
+  const el = document.getElementById("desglosa-resultado");
+  if (!tarea) return;
+  el.innerHTML = `<div class="sub">pensando…</div>`;
+  try {
+    const v = await api("/api/ritmo/desglosa", {method:"POST", body: JSON.stringify({tarea, picante})});
+    el.innerHTML = `<ol style="padding-left:20px;line-height:1.7">`
+      + v.pasos.map(p => `<li>${p}</li>`).join("")
+      + `</ol><button class="btn chico" onclick="agregarDesgloseAlPlan()">+ agregar como bloque suelto</button>`;
+    window._ultimoDesglose = v;
+  } catch (e) {
+    el.innerHTML = `<div class="sub">no se pudo desglosar: ${e.message}</div>`;
+  }
+}
+
+function agregarDesgloseAlPlan(){
+  const v = window._ultimoDesglose;
+  if (!v) return;
+  RITMO_PLAN.push({titulo: v.tarea, modo: "multitarea"});
+  pintarRitmoPlan();
+  // Cambia a la vista de plan para que se vea de inmediato lo que se agrego.
+  document.getElementById("desglosa-resultado").innerHTML += `<div class="sub">agregado al plan de abajo — guarda el plan para confirmarlo</div>`;
+}
+
+// ---------------- Agenda (Fase 2 de la ola agenda) ----------------
+async function cargarAgendaEstado(){
+  const el = document.getElementById("agenda-frescura");
+  if (!el) return;
+  try {
+    const v = await api("/api/agenda");
+    if (v.horas_desde_ultimo_post == null) {
+      el.textContent = "sin datos todavía (esperando el primer POST)";
+    } else if (v.horas_desde_ultimo_post > ((AJUSTES?.agenda?.horas_frescura) ?? 24)) {
+      el.innerHTML = `<span class="pill warn">desactualizada</span> hace ${v.horas_desde_ultimo_post.toFixed(0)}h`;
+    } else {
+      el.innerHTML = `<span class="pill ok">al día</span> hace ${v.horas_desde_ultimo_post.toFixed(1)}h`;
+    }
+  } catch (e) {
+    el.textContent = "sin conexión";
+  }
+  const t = AJUSTES?.agenda || {};
+  const bT = document.getElementById("btn-agenda-trabajo");
+  const bP = document.getElementById("btn-agenda-personal");
+  if (bT) { bT.classList.toggle("on", !!t.ocultar_trabajo); bT.textContent = t.ocultar_trabajo ? "oculto" : "visible"; }
+  if (bP) { bP.classList.toggle("on", !!t.ocultar_personal); bP.textContent = t.ocultar_personal ? "oculto" : "visible"; }
+}
+
+async function toggleAgendaCalendario(campo, idBtn){
+  const actual = AJUSTES?.agenda || {ocultar_personal:false, ocultar_trabajo:false, horas_frescura:24};
+  const nuevo = {...actual, [campo]: !actual[campo]};
+  await guardarSeccion("agenda", nuevo);
+  await cargarAgendaEstado();
+}
+
+async function cargarTodo(){
+  cargarEstado(); cargarProveedores(); cargarMcp(); cargarClaves(); cargarConsumo();
+  await cargarAjustes();
+  cargarRitmoEstado(); cargarRitmoPlan(); cargarAgendaEstado();
+  setInterval(cargarRitmoEstado, 10000);
+  setInterval(cargarAgendaEstado, 60000);
+  setInterval(cargarConsumo, 15000);
   sincronizaDispositivo();
   setInterval(sincronizaDispositivo, 3000);
 }

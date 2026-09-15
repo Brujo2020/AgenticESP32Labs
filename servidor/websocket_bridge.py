@@ -1,4 +1,3 @@
-import hmac
 #!/usr/bin/env python3
 """
 Puente de voz ESP32 <-> agente.
@@ -21,7 +20,7 @@ propia sesion de voz -- nunca se comparten. Los servicios periodicos
 conexion: antes, con N dispositivos conectados, habia N pollers de RSS
 duplicados escribiendo directo al socket sin pasar por el lock del canal.
 """
-import asyncio, hmac, audioop, json, os, socket, subprocess, tempfile, wave, logging
+import asyncio, audioop, hmac, json, os, resource, socket, subprocess, tempfile, time, wave, logging
 import websockets
 
 from nucleo.entorno import carga_env
@@ -30,6 +29,10 @@ carga_env()   # servidor/.env, si existe — ver panel.py. No pisa el entorno re
 from nucleo import Agente, Config, MCPPool
 from nucleo.canal import REGISTRO_DISPOSITIVOS as REGISTRO
 from nucleo.guardia import GUARDIA, Rechazo
+from nucleo.foco import MOTOR, Aviso, PASA, GUARDA, URGENTE, NORMAL, AMBIENTE, FOCO
+from nucleo.ritmo import RITMO
+from nucleo.planificador import plan_del_dia, _infiere_modo
+from nucleo import historial_foco, preferencias_modo
 from proveedores import cadenas_desde_config
 from noticias import titulares
 from telemetria import lineas_mac, lineas_creativo
@@ -46,6 +49,99 @@ log = logging.getLogger("puente")
 
 agente = None
 cadenas = {}
+
+# ---- Ola 8 (operacion): salud del proceso, ver comando de control 'salud' ----
+# Uptime y contadores de turnos de voz -- lo que /api/salud (panel_api.py)
+# necesita para reportar "el puente vive y esto es lo que ha hecho" sin
+# depender de leer logs a mano.
+_inicio = time.time()
+_contadores = {"turnos_ok": 0, "turnos_error": 0, "turnos_ruido": 0}
+
+# Ola 8, tarea "Consumo de proveedores por dispositivo en el panel": mismo
+# contador de arriba, pero desglosado por device_id -- el global sirve para
+# /api/salud (todo el proceso), este para saber SI FUE la bola o el Stick
+# quien gasto la cuota. No se toca proveedores/__init__.py (Cadena.chat/
+# transcribir/sintetizar) para no tocar el camino caliente de cada turno de
+# voz -- se cuenta aqui, en el unico sitio que ya sabe el device_id Y el
+# desenlace del turno.
+_contadores_por_dispositivo: dict[str, dict] = {}
+
+
+def _cuenta(canal_disp, clave: str):
+    _contadores[clave] += 1
+    d = _contadores_por_dispositivo.setdefault(
+        canal_disp.device_id, {"turnos_ok": 0, "turnos_error": 0, "turnos_ruido": 0})
+    d[clave] += 1
+
+# Ola ritmo, Fase 2: "disparo del parte del dia al primer 'hola' de la
+# mañana" (tasks.md). No es un cron -- se dispara solo cuando alguien de
+# verdad conecta, que es exactamente cuando tiene sentido mostrarlo. Guarda
+# la fecha (no un booleano) para que un reinicio del proceso a media
+# jornada no vuelva a replanificar de mas si ya se hizo hoy.
+_ultimo_dia_planificado = ""
+
+
+async def _pinta_parte_del_dia(canal_disp):
+    """cerebro-jornada, los dos pendientes que ese tasks.md dejaba fuera de
+    su ola ("vista dedicada en el HUD" + "disparo automatico al primer
+    hola", en vez de esperar a que el agente llame a parte_del_dia() por
+    voz). No reimplementa mcps/jornada.py::parte_del_dia() como proceso
+    aparte -- reusa lo que el bridge YA tiene fresco (_cache_clima,
+    _cache_noticias, alimentados por difunde_clima()/difunde_noticias()) en
+    vez de volver a pedirlo todo por HTTP en cada conexion de la mañana."""
+    if not canal_disp.quiere("noticias") and not canal_disp.quiere("clima"):
+        return   # el dispositivo no pidio ninguno de los dos servicios que arma esta vista
+    from nucleo import pendientes as _pendientes
+    try:
+        hoy = await asyncio.to_thread(_pendientes.lista)
+        ayer = await asyncio.to_thread(_pendientes.pendientes_de_ayer)
+    except Exception as e:
+        log.warning("parte del dia: no se pudo leer pendientes.json: %s", e)
+        hoy, ayer = [], []
+    filas = [f"{len(hoy)} pendiente(s) hoy"]
+    if ayer:
+        filas.append(f"{len(ayer)} sin cerrar de ayer")
+    if _cache_clima:
+        filas.append(_cache_clima[-1])
+    if _cache_noticias:
+        filas.append(_cache_noticias[0][:24])
+    try:
+        await canal_disp.mostrar("parte", "BUENDIA", filas, acento="lime")
+    except Exception as e:
+        log.warning("parte del dia: no se pudo pintar en '%s': %s", canal_disp.device_id, e)
+
+
+async def _asegura_plan_del_dia(canal_disp):
+    """Arma el plan de hoy con lo pendiente (nucleo/planificador.py) y
+    pinta el parte del dia (cerebro-jornada) LA PRIMERA vez que cualquier
+    dispositivo saluda en el dia -- no en cada conexion, y nunca pisa un
+    plan de ritmo que el humano ya puso a mano (RF-9)."""
+    global _ultimo_dia_planificado
+    hoy = time.strftime("%Y-%m-%d")
+    if hoy == _ultimo_dia_planificado:
+        return
+    _ultimo_dia_planificado = hoy
+
+    await _pinta_parte_del_dia(canal_disp)
+
+    if RITMO.plan():
+        log.info("ritmo: ya hay un plan puesto para hoy, no se pisa con plan_del_dia()")
+        return
+    ocultar = _ocultar_calendarios_agenda()
+    try:
+        bloques = await asyncio.to_thread(plan_del_dia, None, ocultar)
+    except Exception as e:
+        log.warning("ritmo: plan_del_dia() fallo, sin plan automatico hoy: %s", e)
+        return
+    if not bloques:
+        return
+    RITMO.plan_set(bloques)
+    log.info("ritmo: plan del dia armado con %d bloque(s) desde pendientes.json", len(bloques))
+    if canal_disp.quiere("ritmo"):
+        try:
+            await canal_disp.notifica(f"plan del dia: {len(bloques)} bloque(s)", "info")
+        except Exception as e:
+            log.warning("ritmo: no se pudo avisar el plan del dia: %s", e)
 
 
 async def arranca_agente():
@@ -225,6 +321,22 @@ def _en_lineas(texto: str, ancho: int) -> list[str]:
 _cache_noticias: list[str] = []
 _cache_mac: list[str] = []
 _cache_creativo: list[str] = []
+_cache_clima: list[str] = []
+_clima_geocode = {"ciudad": None, "lat": None, "lon": None}
+
+# Historial de chat (tu/ia) para el panel -- pedido explicito del usuario
+# (13/sep/2026): "historial de chat/senales/maquina" en la pagina web, ver
+# fn "resumen_feeds" mas abajo. Un solo historial global (no por
+# dispositivo): hoy solo el Stick mantiene una conversacion de voz activa a
+# la vez, asi que separar por device_id seria complejidad sin beneficio
+# real todavia. Tope de 40 lineas para no crecer sin limite en un proceso
+# que corre 24/7.
+_historial_chat: list[dict] = []
+
+
+def _chat_cachea(rol: str, texto: str) -> None:
+    _historial_chat.append({"rol": rol, "texto": texto})
+    del _historial_chat[:-40]
 
 
 async def envia_a_canal(canal, tipo, valor):
@@ -258,6 +370,93 @@ async def empuja_estado_actual(canal):
         await envia_a_canal(canal, "creativo_reset", "")
         for l in _cache_creativo:
             await envia_a_canal(canal, "creativo", l)
+    if _cache_clima and canal.quiere("clima"):
+        try:
+            await canal.mostrar("clima", "ATMOS", _cache_clima, acento="ice")
+        except Exception as e:
+            log.debug("clima: no se pudo empujar estado actual a '%s': %s",
+                      canal.device_id, e)
+
+
+async def _resuelve_geocode_clima(ciudad: str):
+    """Cachea lat/lon de la ultima ciudad resuelta -- si no cambia en
+    ajustes.yaml, no hay que volver a pegarle a la API de geocoding cada
+    ciclo. Misma API que mcps/clima.py (clima_ubicacion), sin depender de
+    levantar ese proceso MCP para algo que corre cada 20 min en el mismo
+    proceso del puente."""
+    if _clima_geocode["ciudad"] == ciudad and _clima_geocode["lat"] is not None:
+        return _clima_geocode["lat"], _clima_geocode["lon"]
+    import aiohttp
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={ciudad}&count=1"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+    except Exception as e:
+        log.warning("clima: geocoding de '%s' fallo: %s", ciudad, e)
+        return None, None
+    resultados = data.get("results") or []
+    if not resultados:
+        log.warning("clima: geocoding no encontro '%s'", ciudad)
+        return None, None
+    r = resultados[0]
+    _clima_geocode.update(ciudad=ciudad, lat=r.get("latitude"), lon=r.get("longitude"))
+    return _clima_geocode["lat"], _clima_geocode["lon"]
+
+
+async def difunde_clima():
+    """Clima (15/sep/2026, pedido explicito del usuario): antes solo se
+    conseguia preguntandolo por voz (mcps/clima.py, bajo demanda). Ahora
+    ADEMAS se difunde solo cada 20 min, mismo patron que difunde_noticias --
+    a todos los dispositivos vivos que quieran 'clima' (ver SERVICIOS en
+    nucleo/canal.py).
+
+    Sin ciudad configurada en el panel (ajustes.yaml: clima.ciudad vacio) no
+    hace nada: no se inventa una ubicacion por defecto. La pantalla 'clima'
+    tiene que estar activa en el panel, igual que noticias/mac.
+    """
+    global _cache_clima
+    import aiohttp
+    while True:
+        try:
+            cfg = ajustes_actuales().get("clima") or {}
+            ciudad = (cfg.get("ciudad") or "").strip()
+            if ciudad and pantalla_activa("clima"):
+                lat, lon = await _resuelve_geocode_clima(ciudad)
+                if lat is not None:
+                    url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                           "&current=temperature_2m,relative_humidity_2m&timezone=auto")
+                    datos_ok = False
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                                if resp.status == 200:
+                                    data = await resp.json()
+                                    datos_ok = True
+                    except Exception as e:
+                        log.warning("clima: consulta fallo: %s", e)
+                    if datos_ok:
+                        cur = data.get("current") or {}
+                        temp = cur.get("temperature_2m")
+                        hum = cur.get("relative_humidity_2m")
+                        if temp is not None:
+                            _cache_clima = [
+                                ciudad.upper()[:20],
+                                f"{temp}C  HUM {hum}%" if hum is not None else f"{temp}C",
+                            ]
+                            destinos = [c for c in REGISTRO.vivos() if c.quiere("clima")]
+                            for c in destinos:
+                                try:
+                                    await c.mostrar("clima", "ATMOS", _cache_clima, acento="ice")
+                                except Exception as e:
+                                    log.warning("clima: no se pudo pintar en '%s': %s",
+                                                c.device_id, e)
+                            if destinos:
+                                log.info("clima actualizado (%s, %s°C) enviado a %d dispositivo(s)",
+                                          ciudad, temp, len(destinos))
+        except Exception as e:
+            log.warning("difunde_clima: %s", e)
+        await asyncio.sleep(20 * 60)
 
 
 async def difunde_noticias():
@@ -354,7 +553,12 @@ async def vigila_alertas():
                 continue
             intervalo = max(60, int(aj.get("intervalo_min", 10)) * 60)
 
-            avisos = []
+            # Cada aviso lleva su urgencia y una clave estable (RF-4/RF-6 de
+            # SuperPower, .kiro/specs/superpower/requirements.md): la lluvia
+            # es NORMAL (util, no ambiental) y una vez avisada no se repite
+            # hasta que escampe; una noticia es AMBIENTE, y la clave es el
+            # propio titular para que refrescos identicos no dupliquen.
+            avisos = []   # [(Aviso, urgencia_original)]
 
             # --- lluvia en las proximas horas ---------------------------
             # Open-Meteo sin API key, igual que el MCP de clima. Se mira la
@@ -371,7 +575,8 @@ async def vigila_alertas():
                 pico = max(probs) if probs else 0
                 if pico >= 60 and not aviso_lluvia_dado:
                     horas = probs.index(pico) if pico in probs else 0
-                    avisos.append(f"Ojo, {pico} por ciento de lluvia en unas {horas or 1} horas.")
+                    txt = f"Ojo, {pico} por ciento de lluvia en unas {horas or 1} horas."
+                    avisos.append(Aviso(txt, NORMAL, clave="lluvia", origen="alertas"))
                     aviso_lluvia_dado = True
                 elif pico < 40:
                     aviso_lluvia_dado = False       # se rearma cuando escampa
@@ -384,15 +589,23 @@ async def vigila_alertas():
             try:
                 ts = await titulares(1)
                 if ts and ultimo_titular is not None and ts[0] != ultimo_titular:
-                    avisos.append(f"Noticia nueva. {ts[0].capitalize()}.")
+                    txt = f"Noticia nueva. {ts[0].capitalize()}."
+                    avisos.append(Aviso(txt, AMBIENTE, clave="titular", origen="noticias"))
                 if ts:
                     ultimo_titular = ts[0]
             except Exception as e:
                 log.debug("alerta noticias: %s", e)
 
+            # --- SuperPower decide: ¿se dice ahora, o se guarda? -----------
+            # PASA -> interrumpe como siempre. GUARDA -> a la bandeja de
+            # SuperPower; se entrega en el proximo hueco (fin de un descanso,
+            # o al volver de HyperFocus/AUSENTE) en vez de perderse.
+            a_entregar = [av for av in avisos if MOTOR.propone(av) == PASA]
+
             # --- entrega: a cada dispositivo vivo que quiera alertas ------
             destinos = [c for c in REGISTRO.vivos() if c.quiere("alertas")]
-            for texto in avisos:
+            for av in a_entregar:
+                texto = av.texto
                 log.info("ALERTA: %s", texto)
                 for c in destinos:
                     try:
@@ -411,6 +624,334 @@ async def vigila_alertas():
         except Exception as e:
             log.warning("vigila_alertas: %s", e)
         await asyncio.sleep(intervalo)
+
+
+async def _entrega_bandeja(pendientes):
+    """Reparte lo que SuperPower tenia guardado, al abrirse un hueco.
+
+    Mismo camino de entrega que vigila_alertas: notifica + voz opcional a
+    todo dispositivo vivo que quiera alertas. Separado en su propia funcion
+    porque dos sitios lo disparan (el fin de un descanso y la orden manual
+    'foco_descanso' del MCP), y las dos deben repartir exactamente igual.
+    """
+    if not pendientes:
+        return
+    aj = ajustes_actuales().get("alertas") or {}
+    destinos = [c for c in REGISTRO.vivos() if c.quiere("alertas")]
+    for av in pendientes:
+        for c in destinos:
+            try:
+                await c.notifica(av.texto[:60], "info", beep=False)
+            except Exception as e:
+                log.warning("entrega bandeja: no se pudo notificar a '%s': %s",
+                            c.device_id, e)
+        if aj.get("hablar", True) and destinos:
+            try:
+                audio = await asyncio.to_thread(sintetiza, av.texto)
+                await Ritmo().envia(destinos[0], audio)
+            except Exception as e:
+                log.warning("entrega bandeja: no se pudo hablar: %s", e)
+
+
+async def vigila_superpower():
+    """El pulso de SuperPower: temporizadores (90/180 min de HyperFocus,
+    ausencia, fin de un descanso) que no dependen de que llegue un evento.
+
+    30 s de resolucion es de sobra: los umbrales del motor son de minutos.
+    Todo el trabajo de decidir vive en nucleo/foco.py (MotorFoco.tick());
+    aqui solo se traduce cada accion a algo que el dispositivo entiende.
+
+    RF-18: aqui mismo, comparando MOTOR.estado antes/despues de cada tick,
+    se detecta la transicion a FOCO y se registra en historial_foco.py --
+    nucleo/foco.py sigue sin saber que ese historial existe (ver su
+    cabecera y la de historial_foco.py).
+    """
+    while True:
+        try:
+            estado_antes = MOTOR.estado
+            for accion in MOTOR.tick():
+                tipo = accion.get("tipo")
+                if tipo in ("descanso_sugerido", "descanso_urgente"):
+                    destinos = [c for c in REGISTRO.vivos() if c.quiere("alertas")]
+                    nivel = "warn" if accion.get("urgencia") == URGENTE else "info"
+                    for c in destinos:
+                        try:
+                            await c.notifica(accion["texto"], nivel,
+                                              beep=(nivel == "warn"))
+                        except Exception as e:
+                            log.warning("superpower: no se pudo avisar a '%s': %s",
+                                        c.device_id, e)
+                elif tipo == "reset_ofrecido":
+                    # Se OFRECE (RF-3): una linea de estado, sin beep. Un
+                    # cacharro que regaña por cambiar de ventana no ayuda.
+                    for c in REGISTRO.vivos():
+                        if c.quiere("alertas"):
+                            try:
+                                await c.notifica(accion["texto"], "info")
+                            except Exception:
+                                pass
+                elif tipo == "fin_descanso":
+                    log.info("superpower: fin de descanso, vuelta a LIBRE")
+                elif tipo == "hueco_estudio":
+                    # RF-10: el momento oportuno para una pregunta de la
+                    # certificacion NVIDIA. El contenido del estudio es de
+                    # otra ola (cerebro-jornada); aqui solo se marca el hueco.
+                    log.info("superpower: hueco de estudio abierto")
+                elif tipo == "ausente":
+                    log.info("superpower: sin señales, AUSENTE (silencio total)")
+            if MOTOR.estado == FOCO and estado_antes != FOCO:
+                # Transicion real a FOCO (no cada tick mientras se sigue
+                # dentro) -- registra_entrada_foco() alimenta RF-18.
+                try:
+                    historial_foco.registra_entrada_foco()
+                except Exception as e:
+                    log.warning("vigila_superpower: no se pudo registrar entrada a FOCO: %s", e)
+        except Exception as e:
+            log.warning("vigila_superpower: %s", e)
+        await asyncio.sleep(30)
+
+
+_SEMAFORO_ACENTO = {"normal": "cyan", "ambar": "amber", "rojo": "blood"}
+
+# Ola agenda, Fase 2: se avisa una vez por "episodio" de desactualizacion,
+# no en cada ciclo de vigila_ritmo() (10 s) -- eso seria un beep cada 10 s
+# mientras el Atajo no corra. Se rearma solo cuando llega un POST nuevo
+# (horas_desde_ultimo_post() vuelve a bajar del umbral).
+_agenda_avisada_vieja = False
+
+
+def _ocultar_calendarios_agenda() -> set:
+    """RF-7 (Fase 2): que calendarios excluir del plan/vista, segun
+    ajustes.yaml:agenda. Ambos en false por defecto (nada oculto)."""
+    cfg = ajustes_actuales().get("agenda") or {}
+    ocultar = set()
+    if cfg.get("ocultar_trabajo"):
+        ocultar.add("trabajo")
+    if cfg.get("ocultar_personal"):
+        ocultar.add("personal")
+    return ocultar
+
+
+def _aplica_cfg_ritmo():
+    """Aplica servidor/ajustes.yaml:ritmo a RITMO -- editable en caliente,
+    sin reiniciar el bridge (mismo patron que 'alertas'). Se llama en cada
+    ciclo de vigila_ritmo() porque ajustes_actuales() ya cachea por mtime,
+    asi que releerlo es barato."""
+    cfg = (ajustes_actuales().get("ritmo") or {})
+    modos_cfg = cfg.get("modos") or {}
+    for nombre, over in modos_cfg.items():
+        if nombre in RITMO._modos and isinstance(over, dict):
+            RITMO._modos[nombre].update({k: v for k, v in over.items() if v is not None})
+    if "minutos_ancla_bloquea_extension" in cfg:
+        RITMO.minutos_ancla_bloquea_extension = int(cfg["minutos_ancla_bloquea_extension"])
+    if "dias_via_fria" in cfg:
+        RITMO.dias_via_fria = int(cfg["dias_via_fria"])
+
+
+def _pinta_vista_ritmo(snap: dict) -> list:
+    """RF-7 'vista inteligente': AHORA / barra de agotamiento / minutos /
+    LUEGO / bandeja, dentro de las filas de hud_mostrar existente. Cero
+    firmware nuevo (Fase 1): son filas de texto sobre el protocolo v2."""
+    activo = snap.get("activo")
+    filas = []
+    if activo is None:
+        if snap.get("esperando_confirmacion"):
+            sig = snap.get("siguiente")
+            filas.append(f"LISTO: {sig['titulo'][:18]}" if sig else "LISTO")
+            filas.append("boton = empezar")
+        else:
+            filas.append("sin bloque activo")
+    else:
+        restante_min = activo["restante_seg"] // 60
+        filas.append(f"AHORA: {activo['titulo'][:18]}")
+        ancho = 10
+        llenas = max(0, min(ancho, round(activo["pct_restante"] * ancho)))
+        filas.append("#" * llenas + "-" * (ancho - llenas))
+        filas.append(f"quedan {restante_min} min")
+    sig = snap.get("siguiente")
+    if sig and not snap.get("esperando_confirmacion"):
+        filas.append(f"LUEGO: {sig['titulo'][:18]}")
+    frias = snap.get("vias_frias") or []
+    if frias:
+        filas.append(f"vias frias: {len(frias)}")
+    return filas
+
+
+async def vigila_ritmo():
+    """El pulso de Ritmo (ola ritmo, Fase 1): traduce lo que decide
+    nucleo/ritmo.py::RITMO.tick() a HUD + tono, cada 10 s, para todo
+    dispositivo vivo que quiera el servicio 'ritmo' (nucleo/canal.py).
+
+    10 s y no 30 como vigila_superpower(): aqui hay countdown visible en
+    pantalla (RF-7), 30 s se notaria a ojo como un salto.
+    """
+    while True:
+        try:
+            _aplica_cfg_ritmo()
+            destinos = [c for c in REGISTRO.vivos() if c.quiere("ritmo")]
+            for accion in RITMO.tick(estado_foco=MOTOR.estado):
+                tipo = accion.get("tipo")
+                if tipo == "aviso_cierre":
+                    for c in destinos:
+                        try:
+                            await c.notifica(
+                                f"cierra en {accion['minutos_restantes']} min", "warn", beep=True)
+                        except Exception as e:
+                            log.warning("ritmo: aviso_cierre a '%s': %s", c.device_id, e)
+                elif tipo == "ofrece_extender":
+                    for c in destinos:
+                        try:
+                            await c.notifica(
+                                f"¿+{accion['minutos']} min? boton = si", "info", beep=True)
+                        except Exception as e:
+                            log.warning("ritmo: ofrece_extender a '%s': %s", c.device_id, e)
+                elif tipo == "fin_bloque":
+                    for c in destinos:
+                        try:
+                            await c.notifica("bloque cerrado", "info", beep=True)
+                        except Exception as e:
+                            log.warning("ritmo: fin_bloque a '%s': %s", c.device_id, e)
+                elif tipo == "ancla_proxima":
+                    log.info("ritmo: reunion anclada proxima, no se ofrece extension")
+            snap = RITMO.snapshot()
+            acento = "cyan"
+            if snap.get("activo"):
+                acento = _SEMAFORO_ACENTO.get(snap["activo"].get("semaforo"), "cyan")
+            filas = _pinta_vista_ritmo(snap)
+            guardadas = MOTOR.guardadas()
+            for c in destinos:
+                try:
+                    await c.mostrar("ritmo", "RITMO", filas, acento=acento)
+                except Exception as e:
+                    log.warning("ritmo: no se pudo pintar en '%s': %s", c.device_id, e)
+                # Vista dedicada de bandeja (Fase 2, tasks.md: "cierra el
+                # pendiente que dejó abierto superpower/tasks.md"): cuantos
+                # avisos esperan un hueco (RF-5 de superpower), aparte de la
+                # cuenta que ya aparecia mezclada en foco_estado(). Se pinta
+                # SIEMPRE (aunque sea 0) para que la pantalla no desaparezca
+                # justo cuando se vacia.
+                try:
+                    await c.mostrar("bandeja", "BANDEJA",
+                                     [f"{guardadas} guardada{'s' if guardadas != 1 else ''}"],
+                                     acento=("amber" if guardadas else "grey"))
+                except Exception as e:
+                    log.warning("bandeja: no se pudo pintar en '%s': %s", c.device_id, e)
+            await _avisa_agenda_desactualizada(destinos)
+        except Exception as e:
+            log.warning("vigila_ritmo: %s", e)
+        await asyncio.sleep(10)
+
+
+async def _avisa_agenda_desactualizada(destinos):
+    """Ola agenda, Fase 2 (RF-6: 'el HUD indica que la agenda esta
+    desactualizada; no inventa reuniones ni se queda esperando'). Un solo
+    aviso por episodio -- ver _agenda_avisada_vieja."""
+    global _agenda_avisada_vieja
+    from nucleo import agenda as _agenda
+    try:
+        horas = await asyncio.to_thread(_agenda.horas_desde_ultimo_post)
+    except Exception as e:
+        log.warning("agenda: no se pudo leer frescura: %s", e)
+        return
+    if horas is None:
+        return   # nunca se recibio nada: RF-6 no es "desactualizada", es "nunca hubo"
+    umbral = float((ajustes_actuales().get("agenda") or {}).get("horas_frescura", 24))
+    if horas > umbral and not _agenda_avisada_vieja:
+        _agenda_avisada_vieja = True
+        for c in destinos:
+            try:
+                await c.notifica(f"agenda desactualizada ({horas:.0f}h)", "warn")
+            except Exception as e:
+                log.warning("agenda: no se pudo avisar frescura a '%s': %s", c.device_id, e)
+    elif horas <= umbral:
+        _agenda_avisada_vieja = False   # se rearma solo con un POST nuevo
+
+
+def _aprende_correcciones_modo(bloques: list) -> None:
+    """RF-17: si el panel (o cualquier cliente de ritmo_plan) manda un
+    bloque de origen 'pendiente' con un modo distinto del que la heuristica
+    pura le pondria (sin overrides -- asi se detecta una correccion real,
+    no un eco del propio override ya aplicado), se recuerda esa correccion
+    en preferencias_modo.json para que pese mas la proxima vez.
+
+    Nunca tumba el guardado del plan: un fallo aqui se registra y se sigue
+    (ver el try/except al llamar). No se llama para bloques de origen
+    'agenda' u otro -- esos no pasan por _infiere_modo() en primer lugar.
+    """
+    for b in bloques or []:
+        if not isinstance(b, dict) or b.get("origen") != "pendiente":
+            continue
+        titulo = str(b.get("titulo", "")).strip()
+        modo = str(b.get("modo", "")).strip()
+        if not titulo or not modo:
+            continue
+        propuesto = _infiere_modo(titulo)   # sin overrides: la heuristica pelada
+        if modo != propuesto:
+            try:
+                preferencias_modo.guarda(titulo, modo)
+            except Exception as e:
+                log.warning("preferencias_modo: no se pudo guardar correccion: %s", e)
+
+
+_PICANTE_DOC = {
+    0: "3-5 pasos grandes, para quien solo necesita un mapa general",
+    1: "6-10 pasos medianos, cada uno una accion concreta de unos minutos",
+    2: "12-20 microsteps, cada uno tan pequeño que empezarlo no de miedo",
+}
+
+
+async def _desglosa_tarea(tarea: str, picante: int = 1) -> dict:
+    """RF-19 (docs/investigacion/estado-del-arte-tdah-2026-actualizacion.md
+    §2.3 y §5.3): la version propia del 'Magic ToDo' de Goblin Tools --
+    la funcion mas valorada de todo el panorama 2026 segun las tres fuentes
+    leidas para esa investigacion, y la unica pieza que a Goblin Tools le
+    falta (login, memoria, agenda) es exactamente lo que RITMO+pendientes.py
+    ya tienen. 'picante' (0-2) controla la granularidad, mismo concepto que
+    el slider "spiciness" del original.
+
+    No usa RITMO ni nucleo/ritmo.py -- es una utilidad de LLM aislada, sin
+    estado, para no arriesgar nada del motor ya probado. Vive aqui (no en
+    nucleo/) porque necesita 'cadenas', que solo existe en este proceso.
+    """
+    tarea = (tarea or "").strip()
+    if not tarea:
+        return {"error": "falta 'tarea'"}
+    picante = max(0, min(2, int(picante)))
+    if not cadenas.get("llm") or not cadenas["llm"].miembros:
+        return {"error": "sin proveedor de llm disponible ahora mismo"}
+    prompt = (
+        "Desglosa la siguiente tarea, que a alguien con TDAH le cuesta empezar, "
+        f"en {_PICANTE_DOC[picante]}. Cada paso debe ser una accion concreta que "
+        "se pueda hacer de inmediato, en imperativo, sin explicaciones. "
+        "Responde SOLO con un array JSON de strings, sin texto alrededor, "
+        f"sin numerar (el orden ya lo da el array).\n\nTarea: {tarea}"
+    )
+    try:
+        respuesta = await cadenas["llm"].chat([{"role": "user", "content": prompt}])
+    except Exception as e:
+        log.warning("ritmo_desglosa: fallo el llm: %s", e)
+        return {"error": f"no se pudo desglosar: {e}"}
+    pasos = _extrae_lista_json(respuesta)
+    if not pasos:
+        return {"error": "el llm no devolvio una lista utilizable", "crudo": respuesta[:200]}
+    return {"tarea": tarea, "picante": picante, "pasos": pasos[:20]}
+
+
+def _extrae_lista_json(texto: str) -> list[str]:
+    """El LLM a veces envuelve el JSON en ```json ... ``` o le añade una
+    frase antes/despues pese a la instruccion -- se extrae el primer
+    array balanceado en vez de asumir que la respuesta es JSON puro."""
+    inicio = texto.find("[")
+    fin = texto.rfind("]")
+    if inicio == -1 or fin == -1 or fin < inicio:
+        return []
+    try:
+        datos = json.loads(texto[inicio:fin + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(datos, list):
+        return []
+    return [str(p).strip() for p in datos if str(p).strip()]
 
 
 async def envia_raw(ws, dato):
@@ -591,6 +1132,125 @@ async def atiende_control(ws):
                     v = REGISTRO.snapshot_todos()
                     await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
                     continue
+
+                # Ola 8 (operacion): salud del proceso para /api/salud del
+                # panel. Antes de exigir target_canal vivo, como
+                # 'estado_todos': no es sobre UN dispositivo.
+                if fn == "salud":
+                    v = {
+                        "uptime_seg": round(time.time() - _inicio, 1),
+                        "memoria_rss_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                        "dispositivos_vivos": len(REGISTRO.vivos()),
+                        "dispositivos_total": len(REGISTRO.snapshot_todos()),
+                        "audio": dict(_contadores),
+                    }
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+
+                # Ola 8, "Consumo de proveedores por dispositivo en el
+                # panel": desglose por device_id (no solo el total de
+                # 'salud') + que proveedor esta activo ahora mismo en cada
+                # cadena. No es atribucion turno-a-turno (Cadena.chat/
+                # transcribir/sintetizar no reportan quien respondio, y
+                # tocar ese camino caliente para esto no vale el riesgo) --
+                # es "cuanto uso este dispositivo" + "con que proveedor
+                # trabajaria ahora", que es lo que RF de la tarea pide.
+                if fn == "consumo":
+                    v = {
+                        "por_dispositivo": dict(_contadores_por_dispositivo),
+                        "proveedores_activos": {
+                            cap: (cadena.activo.nombre if cadena.activo else None)
+                            for cap, cadena in cadenas.items()
+                        },
+                    }
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+
+                # Los comandos de SuperPower operan sobre MOTOR (estado de
+                # UNA persona, ver nucleo/foco.py), no sobre un Canal de UN
+                # dispositivo -- por eso van antes de resolver target_canal
+                # y de exigirle estar vivo. mcps/foco.py es quien los manda.
+                if fn == "foco_estado":
+                    v = MOTOR.snapshot()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "foco_descanso":
+                    minutos = args.get("minutos")
+                    pendientes = MOTOR.descanso(duracion=minutos * 60 if minutos else None)
+                    await _entrega_bandeja(pendientes)
+                    v = {"estado": MOTOR.estado, "entregadas": len(pendientes),
+                         "avisos": [a.texto for a in pendientes]}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "foco_reanuda":
+                    v = {"estado": MOTOR.estado, "migas": MOTOR.reanuda()}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "foco_anota":
+                    MOTOR.anota(args.get("nota", ""))
+                    v = {"ok": True}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+
+                # Ola ritmo: igual que foco_*, RITMO es el estado de UNA
+                # persona, no de un dispositivo -- va antes de target_canal.
+                # mcps/ritmo.py es quien manda estos comandos.
+                if fn == "ritmo_estado":
+                    v = RITMO.snapshot()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_empieza":
+                    v = RITMO.empieza(bloque_id=args.get("bloque_id"), titulo=args.get("titulo"),
+                                       modo=args.get("modo"), minutos=args.get("minutos"),
+                                       via=args.get("via"))
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_extiende":
+                    minutos = args.get("minutos")
+                    v = RITMO.extiende(minutos=minutos) if minutos else RITMO.extiende()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_salta":
+                    v = RITMO.salta()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_cierra":
+                    v = RITMO.cierra()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_confirma":
+                    v = RITMO.confirma()
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_plan":
+                    bloques = args.get("bloques")
+                    if bloques is not None:
+                        try:
+                            _aprende_correcciones_modo(bloques)
+                        except Exception as e:
+                            log.warning("ritmo_plan: fallo aprendiendo correcciones de modo: %s", e)
+                        RITMO.plan_set(bloques)
+                    v = {"plan": RITMO.plan()}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_vias":
+                    v = {"vias_frias": RITMO.vias_frias()}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                if fn == "ritmo_desglosa":
+                    v = await _desglosa_tarea(args.get("tarea", ""), args.get("picante", 1))
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
+                # "resumen_feeds": pedido explicito del usuario, historial
+                # de chat/noticias/mac para el panel -- son cachés globales
+                # (_historial_chat/_cache_noticias/_cache_mac), no de un
+                # dispositivo concreto, asi que va con el mismo patron que
+                # los "foco_*" de arriba: antes de exigir un target_canal vivo.
+                if fn == "resumen_feeds":
+                    v = {"chat": _historial_chat[-20:], "noticias": _cache_noticias,
+                         "mac": _cache_mac}
+                    await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
+                    continue
                 if not target_canal.vivo and fn != "estado":
                     v = {"error": f"no hay ESP32 conectado al puente (dispositivo: {target_canal.device_id})"}
                     await ws.send(json.dumps({"t": "res", "rid": rid, "v": v}))
@@ -661,8 +1321,15 @@ async def atiende_control(ws):
 
 
 def _token_valido(recibido: str) -> bool:
-    """Compara contra HUD_TOKEN con tiempo constante (hmac.compare_digest).
-    HUD_TOKEN vacio (no configurado en .env) => modo abierto, el de hoy."""
+    """Compara contra HUD_TOKEN con tiempo constante (hmac.compare_digest):
+    una comparacion con '==' normal filtra por temporizacion cuanto del
+    token es correcto, byte a byte -- exactamente lo que un atacante en la
+    misma red necesita para adivinarlo por fuerza bruta con paciencia.
+
+    HUD_TOKEN vacio (no configurado en .env) => modo abierto, el de hoy.
+    Es una mejora honesta sobre texto plano (design.md ola 2), no una
+    solucion: el salto real es wss:// + nginx, que llega en la ola 8/9.
+    """
     esperado = os.getenv("HUD_TOKEN", "")
     if not esperado:
         return True
@@ -696,7 +1363,10 @@ async def atiende(ws):
                     return
                 d_saludo = d
                 # Identidad explicita (device_id/id) y, desde la ola 2,
-                # geometria/entrada/servicios -- ver Canal.saluda().
+                # geometria/entrada/servicios -- ver Canal.saluda(). Nada de
+                # adivinar el tipo de placa por el string de firmware: esa
+                # rama por tipo es justo lo que la ley 5 (un firmware, dos
+                # placas via limites/geometria) prohibe.
                 dev_id = d.get("device_id") or d.get("id") or dev_id
                 dev_type = d.get("device_type") or d.get("tipo") or dev_type
     except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed):
@@ -715,6 +1385,7 @@ async def atiende(ws):
     # tiene que esperar al proximo ciclo de difunde_noticias/telemetria
     # (hasta 15 min) para ver algo en pantalla.
     await empuja_estado_actual(canal_disp)
+    await _asegura_plan_del_dia(canal_disp)
 
     try:
         async for msg in ws:
@@ -747,13 +1418,18 @@ async def atiende(ws):
 
             # Una vista interactiva: el usuario toco una fila
             if data.get("t") == "evento":
+                # Ola 2: se guarda con el device_id de ESTE canal, no solo se
+                # loguea -- asi una tool MCP (mcps/dispositivo.py) puede
+                # responder "se toco en el Stick" en vez de perderlo en texto.
+                ev = canal_disp.registra_evento(data.get("id"), data.get("fila"))
                 log.info("evento en vista '%s': fila %s (dispositivo: %s)",
-                         data.get("id"), data.get("fila"), canal_disp.device_id)
+                         ev["id"], ev["fila"], ev["device_id"])
                 continue
 
             if data.get("t") == "fin":
                 if len(buffer) < SAMPLE_RATE:        # menos de 0.5 s: ruido
                     buffer.clear()
+                    _cuenta(canal_disp, "turnos_ruido")
                     await envia(ws, "estado", "idle")
                     continue
 
@@ -766,6 +1442,11 @@ async def atiende(ws):
                 # Un fallo procesando una frase no puede costar el enlace: se
                 # avisa en pantalla y se sigue escuchando.
                 try:
+                    # Un turno de voz es la señal de actividad mas fuerte que
+                    # existe: alguien esta, sin duda, delante del aparato.
+                    # SuperPower la usa para salir de AUSENTE y para medir
+                    # cuanto lleva "en" la conversacion como app.
+                    MOTOR.latido(f"voz:{canal_disp.device_id}")
                     await envia(ws, "estado", "processing")
                     wav = pcm_a_wav(bytes(buffer))
                     buffer.clear()
@@ -795,12 +1476,14 @@ async def atiende(ws):
 
                     await envia(ws, "texto", texto[:40].upper())
                     await envia(ws, "tu", texto[:33].upper())
+                    _chat_cachea("tu", texto[:33].upper())
                     respuesta = await agente.chat(texto)
                     log.info("respuesta: %s", respuesta)
 
                     await envia(ws, "texto", respuesta[:40].upper())
                     for trozo in _en_lineas(respuesta, 33)[:3]:
                         await envia(ws, "ia", trozo)
+                        _chat_cachea("ia", trozo)
 
                     # DEBUG TEMPORAL: log explicito del valor real de
                     # debe_hablar() y del contenido crudo que esta leyendo,
@@ -814,6 +1497,7 @@ async def atiende(ws):
                     # se muestra en pantalla y ya: ni se sintetiza (no se gasta
                     # cuota de TTS) ni se pone el HUD en "speaking", que seria
                     # mentira.
+                    _cuenta(canal_disp, "turnos_ok")
                     if debe_hablar():
                         await envia(ws, "estado", "speaking")
                         # Frase a frase, no todo de golpe. Antes se generaba el
@@ -844,6 +1528,7 @@ async def atiende(ws):
                 except Exception as e:
                     # Cualquier otro fallo es de ESTA frase, no del enlace.
                     log.exception("fallo procesando la peticion: %s", e)
+                    _cuenta(canal_disp, "turnos_error")
                     buffer.clear()
                     try:
                         await envia(ws, "texto", "ERROR, REINTENTA")
@@ -911,8 +1596,11 @@ async def main():
     # Servicios periodicos: una tarea de proceso cada uno, no una por
     # conexion. Se reparten solos a REGISTRO.vivos() en cada ciclo.
     asyncio.create_task(difunde_noticias())
+    asyncio.create_task(difunde_clima())
     asyncio.create_task(difunde_telemetria())
     asyncio.create_task(vigila_alertas())
+    asyncio.create_task(vigila_superpower())
+    asyncio.create_task(vigila_ritmo())
 
     # ping_interval/ping_timeout: el servidor tambien vigila el enlace. Sin
     # esto, un ESP32 que desaparece de malas maneras (se va el WiFi, se corta

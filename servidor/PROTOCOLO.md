@@ -1,4 +1,10 @@
-# Protocolo ESP32 ↔ servidor (v2)
+# Protocolo ESP32 ↔ servidor (v2.1)
+
+> v2.1 (ola 2, 13/sep/2026) añade identidad y geometria explicitas al `hola`
+> para que un segundo cuerpo (M5StickS3) pueda presentarse sin que el
+> servidor tenga que adivinar nada. **Es estrictamente aditiva**: todo campo
+> nuevo es opcional y cae a los valores de hoy si falta -- ver la tabla de
+> compatibilidad al final.
 
 ## Por qué cambia
 
@@ -56,9 +62,11 @@ mandar bytes que nadie verá.
  "opciones":["SI","NO"],"timeout":30}
 ```
 
-El firmware toma la pantalla completa, pinta la pregunta y hasta 3 opciones como
-botones de 48 px. Al tocar, responde y devuelve el control. Si vence `timeout`,
-responde `-1`.
+El firmware toma la pantalla completa y pinta la pregunta con hasta
+`limites.opciones_max` opciones (ver `hola` mas abajo: 3 con botones, 4 con
+tactil -- con dos botones fisicos navegar mas de 3 opciones es un mal rato).
+Al tocar/pulsar, responde y devuelve el control. Si vence `timeout`, responde
+`-1`.
 
 ### `notifica` — interrupción
 
@@ -75,12 +83,43 @@ como banda superior durante 4 s sobre la pantalla actual, sin robar navegación.
 
 ### `hola` — handshake al conectar
 
+Bola (firmware actual, sin cambios — sigue siendo válido tal cual):
+
 ```json
-{"t":"hola","fw":"0.4.0","vistas_max":8,"filas_max":6,"ancho":26}
+{"t":"hola","fw":"0.7.0","vistas_max":8,"filas_max":6,"ancho":26}
 ```
 
-El servidor **debe** respetar estos límites: son el tamaño real de los buffers
-estáticos del firmware. En un MCU no se reserva memoria por mensaje.
+Bola con handshake explícito (v2.1, opcional):
+
+```json
+{"t":"hola","fw":"0.8.0","id":"bola","tipo":"bola","w":240,"h":240,
+ "entrada":"tactil","vistas_max":8,"filas_max":6,"ancho":26,
+ "servicios":["noticias","telemetria","alertas"]}
+```
+
+M5StickS3:
+
+```json
+{"t":"hola","fw":"0.8.0","id":"stick","tipo":"sticks3","w":135,"h":240,
+ "entrada":"botones","vistas_max":6,"filas_max":5,"ancho":21,
+ "servicios":["alertas"],"token":"..."}
+```
+
+| Campo | Tipo | Notas |
+|-------|------|-------|
+| `fw` | string | Versión del firmware. Su sola presencia marca el protocolo como v2 (o v2.1 si trae los campos de abajo). |
+| `id` | string | `device_id`. Sin él, se asume `"bola"` (compatibilidad, ley 1). |
+| `tipo` | string | `"bola"` o `"sticks3"`. Informativo: el servidor decide por `limites`/`entrada`, nunca por este string (ley 5). |
+| `w`, `h` | int | Geometría real de la pantalla en px. Por defecto 240×240 (la bola de hoy). |
+| `entrada` | enum | `"tactil"` o `"botones"`. Deriva `limites.opciones_max` (ver `pregunta`). Por defecto `"tactil"`. |
+| `vistas_max`, `filas_max`, `ancho` | int | Tamaño real de los buffers estáticos del firmware. El servidor **debe** respetarlos: en un MCU no se reserva memoria por mensaje. |
+| `servicios` | array | Qué feeds periódicos quiere (`noticias`, `telemetria`, `alertas`). Sin este campo, se asume que los quiere todos (compatibilidad). El Stick pide solo `alertas`: es de bolsillo, y recibir 5 titulares cada ciclo es ruido y gasto de radio. |
+| `token` | string | Opcional. Ver «Autenticación» más abajo. |
+
+### Negociación: el firmware declara, el servidor respeta
+
+No hay ida y vuelta. Un dispositivo nuevo no requiere tocar el servidor; un
+servidor nuevo no requiere reflashear ningún firmware existente.
 
 ### `respuesta` — contesta a `pregunta`
 
@@ -98,6 +137,46 @@ estáticos del firmware. En un MCU no se reserva memoria por mensaje.
 
 Permite que una vista sea interactiva: tocar una fila dispara una tool en el
 servidor. Aquí es donde una vista deja de ser un informe y pasa a ser un mando.
+
+Desde v2.1 el servidor guarda cada evento **con el `device_id` de origen**
+(`Canal.registra_evento`), visible en `dispositivo_estado()`. Con dos cuerpos
+conectados a la vez, una tool puede responder "se tocó en el Stick" en vez de
+perderlo en un log de texto.
+
+---
+
+## Autenticación (v2.1, opcional)
+
+```json
+{"t":"hola", "...": "...", "token":"el-token-compartido"}
+```
+
+- El servidor lee `HUD_TOKEN` de `.env`. **Vacío = modo abierto** (el
+  comportamiento de hoy, sin cambio).
+- Configurado, se compara con `hmac.compare_digest` (tiempo constante: una
+  comparación normal filtra por temporización cuánto del token es correcto).
+- Si no coincide: `ws.close(4401, "token")` y se registra en el log. Nunca se
+  traza el token recibido.
+- En el firmware, el token vive en NVS junto al WiFi, provisionado desde el
+  portal de configuración. **Ningún literal en el binario.**
+
+Esto es TLS-menos: el WebSocket sigue siendo texto plano. Es una mejora
+honesta, no una solución — el salto real a `wss://` con nginx llega en la
+ola de operación, donde ya hay dominio.
+
+---
+
+## Tabla de compatibilidad
+
+| Firmware | `hola` | Resultado |
+|---|---|---|
+| v1 (no saluda) | — | canal `bola`, 3 pantallas fijas por nombre, como siempre |
+| v2 actual (bola en producción) | sin `id`/`tipo`/geometría | canal `bola`, 240×240 táctil asumidos, todo igual |
+| v2.1 bola | con `id`/`tipo`/geometría explícitos | canal propio, mismos valores pero declarados, no asumidos |
+| v2.1 stick | con `id`/`tipo`/`w`/`h`/`entrada`/`servicios` | canal propio, 135×240, botones (opciones_max=3), solo `alertas` |
+
+Estas cuatro filas son también el plan de pruebas: cada una es un caso en
+`pruebas/test_compatibilidad_v1.py`.
 
 ---
 
@@ -129,9 +208,10 @@ y es exactamente la tesis de "el wearable es el órgano de I/O del agente".
 
 - **`hud_preguntar` bloquea el bucle de tools del agente.** Por eso `timeout` es
   obligatorio (30 s por defecto) y vencido devuelve `-1`, nunca cuelga.
-- **Sin autenticación.** El WebSocket es texto plano en LAN. Cualquiera en la red
-  puede pintar tu HUD y hablarte por el altavoz. Aceptable en casa; para demo en
-  cliente hace falta TLS + token compartido.
+- **Autenticación opcional, no forzada.** Con `HUD_TOKEN` sin configurar (el
+  caso de hoy) el WebSocket sigue siendo texto plano abierto en LAN. El token
+  de v2.1 sube el costo de entrada, pero el salto real a TLS/`wss://` sigue
+  pendiente (ola de operación).
 - **Memoria.** 8 vistas × 6 filas × 27 bytes ≈ 1.3 KB de buffers estáticos, sobre
   los 115 KB que ya consume el framebuffer. Los límites del handshake no son
   decorativos: son lo que evita que el firmware se quede sin heap.

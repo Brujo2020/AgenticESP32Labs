@@ -24,10 +24,21 @@ log = logging.getLogger("canal")
 # tamano de sus buffers estaticos, no una preferencia.
 LIMITES = {"vistas_max": 8, "filas_max": 6, "ancho": 26}
 
-# Servicios periodicos que un dispositivo puede recibir. Hasta la ola 2
-# (protocolo v2.1, campo 'servicios' en el hola) todo canal los quiere todos:
-# es el comportamiento que ya existia con un solo dispositivo.
+# Servicios periodicos que un dispositivo puede recibir. Por defecto todo
+# canal los quiere todos (comportamiento historico, previo a la ola 2). Un
+# handshake v2.1 con 'servicios' explicito lo estrecha -- tipicamente el
+# Stick, que solo pide 'alertas' porque es de bolsillo (design.md ola 2).
 SERVICIOS = {"noticias", "telemetria", "alertas"}
+
+# Tipos de entrada validos en el campo 'entrada' del hola v2.1.
+ENTRADAS = {"tactil", "botones"}
+
+# Cuantas opciones caben en una 'pregunta', derivado del tipo de entrada
+# (ola 2, design.md): con dos botones fisicos (KEY1/KEY2) navegar mas de 3
+# opciones es un mal rato; con tactil se puede desplazar una lista algo mas
+# larga. Es la razon tecnica, no arbitraria, de por que este numero varia
+# por dispositivo y no es una constante global.
+OPCIONES_MAX = {"botones": 3, "tactil": 4}
 
 # Modo compatibilidad con el firmware v1 (el que no manda handshake).
 # Ese firmware no sabe de vistas declarativas, pero SI tiene tres pantallas
@@ -71,6 +82,14 @@ class Canal:
     device_type: str = "bola"  # "bola" o "sticks3"
     limites: dict = field(default_factory=lambda: dict(LIMITES))
     servicios: set = field(default_factory=lambda: set(SERVICIOS))
+    # Geometria y tipo de entrada declarados en el hola v2.1. Los valores por
+    # defecto son los de la bola blanca de hoy -- ley 1: un dispositivo que no
+    # declara nada (firmware v1, o v2 sin estos campos) se comporta exactamente
+    # como se comportaba antes de la ola 2.
+    w: int = 240
+    h: int = 240
+    entrada: str = "tactil"
+    ultimo_evento: dict = field(default_factory=dict)
     vistas: dict = field(default_factory=dict)
     _pendientes: dict = field(default_factory=dict)   # qid -> Future
     _resueltas: dict = field(default_factory=dict)    # qid -> resultado archivado
@@ -106,23 +125,65 @@ class Canal:
         return bool(self.fw)
 
     def saluda(self, data: dict):
+        """Procesa el handshake 'hola'. El firmware DECLARA, el servidor
+        RESPETA -- no hay ida y vuelta de negociacion (design.md ola 2).
+
+        Todo campo es opcional y cada uno cae a su valor de hoy si falta:
+        es lo que hace que la bola en produccion (que aun manda el hola v2
+        sin 'entrada'/'servicios'/geometria) siga funcionando identico.
+        """
         self.fw = data.get("fw", "?")
         for k in LIMITES:
             if isinstance(data.get(k), int) and data[k] > 0:
                 self.limites[k] = data[k]
-        # Ola 2 (protocolo v2.1) llenara esto desde el campo 'servicios' del
-        # hola. Hasta entonces, todo dispositivo quiere todos los servicios:
-        # es el comportamiento que ya existia con un solo dispositivo.
-        log.info("handshake '%s' fw=%s limites=%s", self.device_id, self.fw, self.limites)
+
+        if isinstance(data.get("w"), int) and data["w"] > 0:
+            self.w = data["w"]
+        if isinstance(data.get("h"), int) and data["h"] > 0:
+            self.h = data["h"]
+
+        entrada = data.get("entrada")
+        if entrada in ENTRADAS:
+            self.entrada = entrada
+        # Deriva el limite de opciones del tipo de entrada YA resuelto, no del
+        # payload crudo: asi un dispositivo que solo manda 'entrada' sin nada
+        # mas ya tiene el numero correcto sin necesitar mandarlo el tambien.
+        self.limites["opciones_max"] = OPCIONES_MAX.get(self.entrada, 3)
+
+        servicios = data.get("servicios")
+        if isinstance(servicios, list) and servicios:
+            # Se estrecha a la interseccion con lo que el servidor conoce: un
+            # firmware de una version futura que pida un servicio que este
+            # servidor todavia no tiene no debe dejarlo suscrito a nada por
+            # error tipografico silencioso.
+            pedidos = {s for s in servicios if isinstance(s, str)}
+            conocidos = pedidos & SERVICIOS
+            if conocidos:
+                self.servicios = conocidos
+
+        log.info("handshake '%s' fw=%s geometria=%dx%d entrada=%s "
+                 "limites=%s servicios=%s",
+                 self.device_id, self.fw, self.w, self.h, self.entrada,
+                 self.limites, sorted(self.servicios))
 
     def quiere(self, servicio: str) -> bool:
         """¿Este canal quiere recibir el servicio periodico dado?
 
-        Stub hasta la ola 2: siempre True. Cuando el hola declare
-        'servicios', esto respetara lo que el dispositivo pidio (por
-        ejemplo, un Stick de bolsillo puede no querer noticias).
+        Ola 2: lee 'self.servicios', que 'saluda()' estrecha si el hola
+        declaro un campo 'servicios' explicito. Sin ese campo (firmware v1,
+        o v2 sin declararlo), todo canal nace queriendo todos los servicios
+        -- el comportamiento que ya existia con un solo dispositivo.
         """
         return servicio in self.servicios
+
+    def registra_evento(self, id: str, fila) -> dict:
+        """Guarda el ultimo toque/pulsacion con SU device_id de origen, para
+        que una tool MCP pueda responder 'en el dispositivo donde se toco'
+        (ola 2, mcps/dispositivo.py) en vez de perderlo en un log de texto."""
+        self.ultimo_evento = {
+            "device_id": self.device_id, "id": id, "fila": fila, "ts": time.time(),
+        }
+        return self.ultimo_evento
 
     async def send(self, dato):
         """UNICA puerta de escritura hacia ESTE dispositivo. Serializa con
@@ -231,7 +292,12 @@ class Canal:
         El timeout no es opcional por diseno: si el usuario se fue por un cafe,
         el bucle de herramientas del agente no puede quedarse colgado.
         """
-        opciones = [str(o).upper()[:10] for o in (opciones or ["SI", "NO"])][:3]
+        # Ola 2: el limite ya no es un '3' fijo, sale de OPCIONES_MAX segun
+        # el tipo de entrada declarado en el hola (limites['opciones_max'],
+        # que 'saluda()' rellena; 3 si nadie saludo todavia -- mismo valor
+        # que existia antes de la ola 2, cero cambio de comportamiento).
+        tope = self.limites.get("opciones_max", 3)
+        opciones = [str(o).upper()[:10] for o in (opciones or ["SI", "NO"])][:tope]
         self._qid += 1
         qid = f"q{self._qid}"
         fut = asyncio.get_running_loop().create_future()
@@ -259,7 +325,12 @@ class Canal:
         Es el patron Tasks de MCP 2026-07-28: retener un tool call mientras una
         persona decide es justo lo que esa extension vino a eliminar.
         """
-        opciones = [str(o).upper()[:10] for o in (opciones or ["SI", "NO"])][:3]
+        # Ola 2: el limite ya no es un '3' fijo, sale de OPCIONES_MAX segun
+        # el tipo de entrada declarado en el hola (limites['opciones_max'],
+        # que 'saluda()' rellena; 3 si nadie saludo todavia -- mismo valor
+        # que existia antes de la ola 2, cero cambio de comportamiento).
+        tope = self.limites.get("opciones_max", 3)
+        opciones = [str(o).upper()[:10] for o in (opciones or ["SI", "NO"])][:tope]
         self._qid += 1
         qid = f"q{self._qid}"
         fut = asyncio.get_running_loop().create_future()
@@ -442,6 +513,13 @@ class Canal:
             "vistas_activas": sorted(self.vistas),
             "limites": self.limites,
             "servicios": sorted(self.servicios),
+            # Ola 2: geometria y entrada explicitas, para que el panel y las
+            # tools MCP sepan que aparato tienen delante sin adivinar por el
+            # device_type ("es 'sticks3' o realmente tiene botones?").
+            "w": self.w,
+            "h": self.h,
+            "entrada": self.entrada,
+            "ultimo_evento": self.ultimo_evento or None,
             **self.estado,
         }
 

@@ -1,3 +1,4 @@
+import hmac
 #!/usr/bin/env python3
 """
 Puente de voz ESP32 <-> agente.
@@ -20,7 +21,7 @@ propia sesion de voz -- nunca se comparten. Los servicios periodicos
 conexion: antes, con N dispositivos conectados, habia N pollers de RSS
 duplicados escribiendo directo al socket sin pasar por el lock del canal.
 """
-import asyncio, audioop, json, os, socket, subprocess, tempfile, wave, logging
+import asyncio, hmac, audioop, json, os, socket, subprocess, tempfile, wave, logging
 import websockets
 
 from nucleo.entorno import carga_env
@@ -659,6 +660,15 @@ async def atiende_control(ws):
         GUARDIA.revoca(sujeto)
 
 
+def _token_valido(recibido: str) -> bool:
+    """Compara contra HUD_TOKEN con tiempo constante (hmac.compare_digest).
+    HUD_TOKEN vacio (no configurado en .env) => modo abierto, el de hoy."""
+    esperado = os.getenv("HUD_TOKEN", "")
+    if not esperado:
+        return True
+    return hmac.compare_digest(str(recibido or ""), esperado)
+
+
 async def atiende(ws):
     """Atiende una conexion de DISPOSITIVO (no de control).
 
@@ -679,14 +689,16 @@ async def atiende(ws):
             if d.get("t") == "hola" and d.get("rol") == "control":
                 return await atiende_control(ws)
             if d.get("t") == "hola":
+                if not _token_valido(d.get("token")):
+                    log.warning("token invalido de %s, se cierra la conexion",
+                                ws.remote_address)
+                    await ws.close(4401, "token")
+                    return
                 d_saludo = d
-                # Ola 1: solo identidad explicita (device_id/id). Nada de
-                # adivinar el tipo de placa por el string de firmware -- esa
-                # rama por tipo es justo lo que la ley 5 (un firmware, dos
-                # placas via limites/geometria) prohibe. La identidad y la
-                # geometria explicitas llegan en la ola 2 (protocolo v2.1).
+                # Identidad explicita (device_id/id) y, desde la ola 2,
+                # geometria/entrada/servicios -- ver Canal.saluda().
                 dev_id = d.get("device_id") or d.get("id") or dev_id
-                dev_type = d.get("device_type") or dev_type
+                dev_type = d.get("device_type") or d.get("tipo") or dev_type
     except (asyncio.TimeoutError, json.JSONDecodeError, websockets.ConnectionClosed):
         primero = None       # firmware v1: no saluda, se asume la bola
 
